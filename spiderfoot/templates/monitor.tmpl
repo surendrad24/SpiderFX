@@ -1,0 +1,158 @@
+<%include file="HEADER.tmpl"/>
+<% import json %>
+
+<h2 class="hx-page-title">Company Attack Surface Monitor</h2>
+
+<div class="btn-toolbar" style="margin-bottom:12px">
+  <div class="btn-group">
+    <a class="btn btn-default active" href="#"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Overview</a>
+    <a class="btn btn-default" href="#monitor-timeline"><i class="glyphicon glyphicon-time"></i>&nbsp;Timeline</a>
+    <a class="btn btn-default" href="#monitor-table"><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a>
+  </div>
+</div>
+
+<div class="row" id="monitor-overview">
+  <div class="col-md-4">
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading">Tracked Changes</div>
+      <div class="panel-body">
+        <table class="table table-condensed small" style="margin-bottom:0">
+          <tr><td>Targets monitored</td><td class="text-right"><strong>${len(rows)}</strong></td></tr>
+          <tr><td>Total added elements</td><td class="text-right"><strong>${sum([r['added'] for r in rows])}</strong></td></tr>
+          <tr><td>Total removed elements</td><td class="text-right"><strong>${sum([r['removed'] for r in rows])}</strong></td></tr>
+          <tr><td>Risky element delta</td><td class="text-right"><strong>${sum([r['risky_delta'] for r in rows])}</strong></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading">Correlation Pressure (Top 10 Targets by Risk Delta)</div>
+      <div class="panel-body" id="monitor-risk-bars"></div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading">Data Volume (Latest vs Previous)</div>
+      <div class="panel-body" id="monitor-volume-bars"></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel panel-default hx-card" id="monitor-timeline">
+  <div class="panel-heading hx-heading">Unique Data Elements (Latest Scan by Target)</div>
+  <div class="panel-body" id="monitor-unique-bars"></div>
+</div>
+
+<div class="panel panel-default hx-card">
+  <div class="panel-heading hx-heading">Tracked Changes Between Latest Two Scans Per Target</div>
+  <div class="panel-body">
+    % if len(rows) == 0:
+      <div class="alert alert-warning">Not enough repeated scans to compute monitoring deltas yet.</div>
+    % else:
+      <table class="table table-bordered table-striped tablesorter" id="monitor-table">
+        <thead>
+          <tr>
+            <th>Target</th>
+            <th>Latest Scan</th>
+            <th>Added</th>
+            <th>Removed</th>
+            <th>Risky Delta</th>
+            <th>Latest Unique</th>
+            <th>Previous Unique</th>
+          </tr>
+        </thead>
+        <tbody>
+          % for row in rows:
+            <tr>
+              <td>${row['target']}</td>
+              <td><a href="${docroot}/scaninfo?id=${row['latest_scan_id']}">${row['latest_scan']}</a></td>
+              <td><span class="label label-success">+${row['added']}</span></td>
+              <td><span class="label label-default">-${row['removed']}</span></td>
+              <td>
+                % if row['risky_delta'] > 0:
+                  <span class="label label-danger">+${row['risky_delta']}</span>
+                % elif row['risky_delta'] < 0:
+                  <span class="label label-info">${row['risky_delta']}</span>
+                % else:
+                  <span class="label label-default">0</span>
+                % endif
+              </td>
+              <td>${row['latest_elements']}</td>
+              <td>${row['previous_elements']}</td>
+            </tr>
+          % endfor
+        </tbody>
+      </table>
+    % endif
+  </div>
+</div>
+
+<script>
+  var monitorRows = [
+    % for row in rows:
+      {
+        target: ${json.dumps(row['target'])},
+        added: ${int(row['added'])},
+        removed: ${int(row['removed'])},
+        risky_delta: ${int(row['risky_delta'])},
+        latest_elements: ${int(row['latest_elements'])},
+        previous_elements: ${int(row['previous_elements'])}
+      },
+    % endfor
+  ];
+
+  function renderMonitorBars(targetId, items, valueFn, colorClass) {
+    var el = $(targetId);
+    el.empty();
+    if (!items || items.length === 0) {
+      el.append("<div class='alert alert-warning'>No monitoring data available.</div>");
+      return;
+    }
+    var maxv = 1;
+    for (var i = 0; i < items.length; i++) {
+      var v = valueFn(items[i]);
+      if (v > maxv) maxv = v;
+    }
+    for (var j = 0; j < items.length; j++) {
+      var cur = items[j];
+      var val = valueFn(cur);
+      var pct = Math.max(1, Math.round((val / maxv) * 100));
+      var row = "<div class='small text-muted'>" + cur.target + " <span class='pull-right'>" + val + "</span></div>";
+      row += "<div class='progress' style='margin-bottom:10px'><div class='progress-bar progress-bar-" + colorClass + "' style='width:" + pct + "%'></div></div>";
+      el.append(row);
+    }
+  }
+
+  if (document.getElementById('monitor-table')) {
+    $('#monitor-table').tablesorter();
+  }
+
+  var riskRank = monitorRows.slice(0).sort(function(a,b){ return Math.abs(b.risky_delta) - Math.abs(a.risky_delta); }).slice(0,10);
+  renderMonitorBars('#monitor-risk-bars', riskRank, function(x){ return Math.abs(x.risky_delta); }, 'danger');
+
+  var volRank = monitorRows.slice(0).sort(function(a,b){ return b.latest_elements - a.latest_elements; }).slice(0,10);
+  var volEl = $('#monitor-volume-bars');
+  volEl.empty();
+  if (volRank.length === 0) {
+    volEl.append("<div class='alert alert-warning'>No volume data available.</div>");
+  } else {
+    var maxLatest = 1;
+    for (var i = 0; i < volRank.length; i++) {
+      if (volRank[i].latest_elements > maxLatest) maxLatest = volRank[i].latest_elements;
+    }
+    for (var k = 0; k < volRank.length; k++) {
+      var v = volRank[k];
+      var lp = Math.max(1, Math.round((v.latest_elements / maxLatest) * 100));
+      var pp = Math.max(1, Math.round((v.previous_elements / maxLatest) * 100));
+      var line = "<div class='small text-muted'>" + v.target + "</div>";
+      line += "<div class='progress' style='margin-bottom:2px'><div class='progress-bar progress-bar-info' style='width:" + lp + "%'>" + v.latest_elements + "</div></div>";
+      line += "<div class='progress' style='margin-bottom:10px'><div class='progress-bar progress-bar-default' style='width:" + pp + "%'>" + v.previous_elements + "</div></div>";
+      volEl.append(line);
+    }
+  }
+
+  renderMonitorBars('#monitor-unique-bars', volRank, function(x){ return x.latest_elements; }, 'primary');
+</script>
+
+<%include file="FOOTER.tmpl"/>

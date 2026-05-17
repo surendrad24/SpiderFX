@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="spiderFX automates OSINT investigations and attack-surface intelligence.">
+  <title>spiderFX | Automated OSINT Platform</title>
+  <link rel="icon" type="image/png" href="${docroot}/static/img/spiderfoot-icon.png">
+  <link href="${docroot}/static/node_modules/bootstrap/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="${docroot}/static/css/spiderfx.css" rel="stylesheet">
+</head>
+<body class="rf-page">
+  <header class="rf-header">
+    <div class="container rf-header-inner">
+      <a href="${docroot}/" class="rf-logo">
+        <img src="${docroot}/static/img/spiderfoot-icon.png" alt="spiderFX logo">
+        <span>spider<span>FX</span></span>
+      </a>
+      <nav class="rf-nav">
+        <a href="#action">See It In Action</a>
+        <a href="#features">Features</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#stats">Stats</a>
+        <a href="${docroot}/signin" class="rf-btn rf-btn-primary">SIGN IN</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="rf-main-screen">
+      <div class="container">
+        <div class="row">
+          <div class="col-lg-6 col-xs-12">
+            <h1 class="rf-title">Automate OSINT for</h1>
+            <h2 class="rf-title rf-title-accent">Threat Intelligence</h2>
+            <p class="rf-description">
+              spiderFX automates OSINT so you can find what matters faster,
+              with deep modules, correlations, and visual intelligence workflows.
+            </p>
+            <div class="rf-cta-group">
+              <a href="${docroot}/signup" class="rf-btn rf-btn-primary">Create Account</a>
+              <a href="${docroot}/console" class="rf-btn rf-btn-secondary">Open Secure Console</a>
+            </div>
+            <div class="rf-inline-stats">
+              <span><b>${scan_count}</b> scans</span>
+              <span><b>${active_count}</b> active</span>
+              <span><b>${api_configured}/${api_total}</b> API keys</span>
+            </div>
+          </div>
+          <div class="col-lg-6 col-xs-12">
+            <div class="rf-screen-card">
+              <img src="${docroot}/static/img/spiderfoot-header-dark.png" alt="spiderFX dashboard">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="rf-grid"></div>
+    </section>
+
+    <section class="rf-video" id="action">
+      <div class="container">
+        <h4>See it in action</h4>
+        <p>HX-style scan intelligence, graph pivots, correlation scoring, and executive reporting.</p>
+      </div>
+    </section>
+
+    <section class="rf-features" id="features">
+      <div class="container">
+        <h4>spiderFX Features</h4>
+        <p class="rf-sub">For teams automating OSINT for threat intelligence, asset discovery, and attack surface monitoring.</p>
+        <div class="row">
+          <div class="col-md-4 col-sm-6 col-xs-12"><div class="rf-feature-card"><h5>Faster Scans</h5><p>Run optimized pipelines with modern integrated tools and broad source coverage.</p></div></div>
+          <div class="col-md-4 col-sm-6 col-xs-12"><div class="rf-feature-card"><h5>Visual Analytics</h5><p>Correlation insights, trend summaries, and graph-driven investigation workflows.</p></div></div>
+          <div class="col-md-4 col-sm-6 col-xs-12"><div class="rf-feature-card"><h5>Expanded Modules</h5><p>Additional OSINT and external-tool modules beyond stock scan configurations.</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="rf-integrations" id="integrations">
+      <div class="container">
+        <h4>Integrations</h4>
+        <div class="rf-tag-cloud">
+        % for tool in featured_tools:
+          <span class="rf-tag">${tool}</span>
+        % endfor
+        </div>
+      </div>
+    </section>
+
+    <section class="rf-stats" id="stats">
+      <div class="container">
+        <div class="row">
+          <div class="col-md-4"><div class="rf-stat"><h3 id="fx-stat-total">-</h3><p>Total scans</p></div></div>
+          <div class="col-md-4"><div class="rf-stat"><h3 id="fx-stat-active">-</h3><p>Active scans</p></div></div>
+          <div class="col-md-4"><div class="rf-stat"><h3 id="fx-stat-modules">-</h3><p>Modules</p></div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="rf-footer">
+    <div class="container">
+      <div>spiderFX ${version}</div>
+      <div><a href="${docroot}/signin">Sign In</a> · <a href="${docroot}/signup">Sign Up</a> · <a href="${docroot}/apidocs">API Docs</a></div>
+    </div>
+  </footer>
+
+  <script>window.docroot='${docroot}';</script>
+  <script src="${docroot}/static/node_modules/jquery/dist/jquery.min.js"></script>
+  <script src="${docroot}/static/js/spiderfx.js"></script>
+</body>
+</html>

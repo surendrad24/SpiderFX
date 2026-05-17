@@ -1,0 +1,218 @@
+<%include file="HEADER.tmpl"/>
+<% import json %>
+
+<h2 class="hx-page-title">Profile</h2>
+
+% if msg:
+<div class="alert alert-success">
+  <button type="button" class="close" data-dismiss="alert">&times;</button>
+  <strong>Success:</strong> ${msg}
+</div>
+% endif
+% if error:
+<div class="alert alert-danger">
+  <button type="button" class="close" data-dismiss="alert">&times;</button>
+  <strong>Error:</strong> ${error}
+</div>
+% endif
+
+<div class="row">
+  <div class="col-md-7">
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading"><strong>Account Profile</strong></div>
+      <div class="panel-body">
+        <form action="${docroot}/profileupdate" method="post">
+          <div class="form-group">
+            <label>Username</label>
+            <input class="form-control" type="text" value="${username}" readonly>
+          </div>
+          <div class="form-group">
+            <label>Full Name</label>
+            <input class="form-control" name="full_name" type="text" value="${profile.get('full_name', '')}" placeholder="Jane Doe">
+          </div>
+          <div class="form-group">
+            <label>Email</label>
+            <input class="form-control" name="email" type="email" value="${profile.get('email', '')}" placeholder="jane@company.com">
+          </div>
+          <div class="form-group">
+            <label>Company</label>
+            <input class="form-control" name="company" type="text" value="${profile.get('company', '')}" placeholder="Acme Security">
+          </div>
+          <div class="form-group">
+            <label>Role</label>
+            <input class="form-control" name="role" type="text" value="${profile.get('role', '')}" placeholder="Threat Intelligence Analyst">
+          </div>
+          <div class="form-group">
+            <label>Use Case</label>
+            <textarea class="form-control" name="use_case" rows="4" placeholder="Attack surface monitoring and OSINT automation">${profile.get('use_case', '')}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Avatar URL</label>
+            <input class="form-control" name="avatar_url" type="url" value="${profile.get('avatar_url', '')}" placeholder="https://example.com/avatar.png">
+            <p class="help-block">Use an image URL. This is stored only on this server.</p>
+          </div>
+          <button class="btn btn-primary" type="submit">Save Profile</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading"><strong>Personal API Key Vault</strong></div>
+      <div class="panel-body">
+        <p class="small text-muted">Store personal API credentials for quick copy/reference. Keys are saved locally in your user profile on this server.</p>
+        <form id="api-vault-form" action="${docroot}/profileapikeys" method="post">
+          <input type="hidden" id="api-keys-json" name="api_keys_json" value="[]">
+          <div class="table-responsive">
+            <table class="table table-bordered table-striped" id="api-vault-table">
+              <thead>
+                <tr>
+                  <th style="width:35%">Provider</th>
+                  <th style="width:55%">API Key / Token</th>
+                  <th style="width:10%">Action</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <button type="button" class="btn btn-default" id="api-vault-add"><i class="glyphicon glyphicon-plus"></i> Add Row</button>
+          <button type="submit" class="btn btn-success">Save API Vault</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-5">
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading"><strong>Avatar Preview</strong></div>
+      <div class="panel-body text-center">
+        % if profile.get('avatar_url'):
+          <img src="${profile.get('avatar_url')}" alt="avatar" style="max-width:180px; max-height:180px; border-radius:50%; border:2px solid #d9e1ea;">
+        % else:
+          <div class="text-muted">No avatar configured yet.</div>
+        % endif
+      </div>
+    </div>
+
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading"><strong>Change Password</strong></div>
+      <div class="panel-body">
+        <form action="${docroot}/changepassword" method="post">
+          <div class="form-group">
+            <label>Current Password</label>
+            <input class="form-control" name="current_password" type="password" required>
+          </div>
+          <div class="form-group">
+            <label>New Password</label>
+            <input class="form-control" name="new_password" type="password" minlength="10" required>
+          </div>
+          <div class="form-group">
+            <label>Confirm New Password</label>
+            <input class="form-control" name="confirm_password" type="password" minlength="10" required>
+          </div>
+          <button class="btn btn-success" type="submit">Update Password</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel panel-default hx-card">
+      <div class="panel-heading hx-heading"><strong>Two-Factor Authentication (2FA)</strong></div>
+      <div class="panel-body">
+        % if twofa_enabled:
+          <p><span class="label label-success">Enabled</span></p>
+          <form action="${docroot}/profile2fadisable" method="post">
+            <div class="form-group">
+              <label>Confirm Password to Disable 2FA</label>
+              <input class="form-control" name="current_password" type="password" required>
+            </div>
+            <button class="btn btn-warning" type="submit">Disable 2FA</button>
+          </form>
+        % else:
+          <p><span class="label label-default">Disabled</span></p>
+          % if pending_2fa_secret:
+            <p class="small">1. Scan this QR in Authenticator app.</p>
+            <div class="sf-qr" id="sf-profile-qr" data-otpauth="${pending_2fa_otpauth}"></div>
+            <p class="small"><code>${pending_2fa_secret}</code></p>
+            <form action="${docroot}/profile2faenable" method="post" style="margin-top:10px;">
+              <div class="form-group">
+                <label>2. Enter 6-digit OTP</label>
+                <input class="form-control" name="otp" type="text" pattern="[0-9]{6}" maxlength="6" required>
+              </div>
+              <button class="btn btn-success" type="submit">Verify and Enable 2FA</button>
+              <a class="btn btn-default" href="${docroot}/profile2facancel">Cancel Setup</a>
+            </form>
+          % else:
+            <a class="btn btn-primary" href="${docroot}/profile2fasetup">Start 2FA Setup</a>
+          % endif
+        % endif
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="${docroot}/static/js/qrcode.min.js"></script>
+<script type="text/javascript">
+(function() {
+  var initialKeys = ${json.dumps(profile.get('api_keys', [])) | n};
+  var tbody = document.querySelector('#api-vault-table tbody');
+  var addBtn = document.getElementById('api-vault-add');
+  var form = document.getElementById('api-vault-form');
+  var hidden = document.getElementById('api-keys-json');
+
+  function rowHtml(name, value) {
+    return "<tr>" +
+      "<td><input class='form-control api-name' type='text' placeholder='Shodan' value='" + (name || "") + "'></td>" +
+      "<td><input class='form-control api-value' type='text' placeholder='api_xxxxx' value='" + (value || "") + "'></td>" +
+      "<td class='text-center'><button type='button' class='btn btn-danger btn-xs api-remove'><i class='glyphicon glyphicon-trash'></i></button></td>" +
+      "</tr>";
+  }
+
+  function addRow(name, value) {
+    tbody.insertAdjacentHTML('beforeend', rowHtml(name, value));
+  }
+
+  function serializeRows() {
+    var rows = tbody.querySelectorAll('tr');
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var name = rows[i].querySelector('.api-name').value.trim();
+      var value = rows[i].querySelector('.api-value').value.trim();
+      if (!name) continue;
+      out.push({name: name, value: value});
+    }
+    return out;
+  }
+
+  addBtn.addEventListener('click', function() { addRow('', ''); });
+
+  tbody.addEventListener('click', function(e) {
+    var btn = e.target.closest('.api-remove');
+    if (!btn) return;
+    var tr = btn.closest('tr');
+    if (tr) tr.remove();
+  });
+
+  form.addEventListener('submit', function() {
+    hidden.value = JSON.stringify(serializeRows());
+  });
+
+  if (Array.isArray(initialKeys) && initialKeys.length > 0) {
+    for (var i = 0; i < initialKeys.length; i++) {
+      addRow(initialKeys[i].name || '', initialKeys[i].value || '');
+    }
+  } else {
+    addRow('', '');
+  }
+
+  var qrEl = document.getElementById('sf-profile-qr');
+  if (qrEl && qrEl.getAttribute('data-otpauth')) {
+    new QRCode(qrEl, {
+      text: qrEl.getAttribute('data-otpauth'),
+      width: 160,
+      height: 160,
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  }
+})();
+</script>
+
+<%include file="FOOTER.tmpl"/>

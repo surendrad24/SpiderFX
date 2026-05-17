@@ -10,7 +10,7 @@
         });
 
         $("#"+activeTab+"list").val(list);
-        for (i = 0; i < tabs.length; tabs++) {
+        for (i = 0; i < tabs.length; i++) {
             if (tabs[i] != activeTab) {
                 $("#"+tabs[i]+"list").val("");
             }

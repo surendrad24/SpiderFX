@@ -1,0 +1,108 @@
+<%include file="HEADER.tmpl"/>
+<h2>User Management</h2>
+% if msg:
+<div class="alert alert-success">
+  <button type="button" class="close" data-dismiss="alert">&times;</button>
+  <strong>Success:</strong> ${msg}
+</div>
+% endif
+% if error:
+<div class="alert alert-danger">
+  <button type="button" class="close" data-dismiss="alert">&times;</button>
+  <strong>Error:</strong> ${error}
+</div>
+% endif
+
+<div class="panel panel-default">
+  <div class="panel-heading"><strong>Create User</strong></div>
+  <div class="panel-body">
+    <form class="form-inline" action="${docroot}/usercreate" method="post">
+      <div class="form-group">
+        <label for="new-user">Username</label>
+        <input id="new-user" class="form-control" type="text" name="username" placeholder="analyst1" required>
+      </div>
+      <div class="form-group" style="margin-left:10px;">
+        <label for="new-pass">Password</label>
+        <input id="new-pass" class="form-control" type="password" name="password" placeholder="min 10 chars" required>
+      </div>
+      <button class="btn btn-primary" type="submit" style="margin-left:10px;">Create</button>
+    </form>
+  </div>
+</div>
+
+<div class="panel panel-default">
+  <div class="panel-heading"><strong>Users</strong></div>
+  <div class="panel-body" style="overflow:auto;">
+    <table class="table table-bordered table-striped">
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Password</th>
+          <th>2FA</th>
+          <th>2FA Secret</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      % for r in rows:
+        <tr>
+          <td>${r['username']}</td>
+          <td>${'Hashed (PBKDF2)' if r['hashed'] else 'Legacy (plaintext)'}</td>
+          <td>${'Enabled' if r['twofa_enabled'] else 'Disabled'}</td>
+          <td>
+          % if r['secret']:
+            <code>${r['secret']}</code><br>
+            <small><code>${r['otpauth']}</code></small><br>
+            <div class="sf-qr" data-otpauth="${r['otpauth']}" id="sf-qr-${r['username']}"></div>
+            <small>Add this secret to Google Authenticator/Authy.</small>
+          % else:
+            <span class="text-muted">Hidden</span>
+          % endif
+          </td>
+          <td>
+            <form action="${docroot}/user2faenable" method="post" style="display:inline;">
+              <input type="hidden" name="username" value="${r['username']}">
+              <button class="btn btn-info btn-xs" type="submit">Enable/Rotate 2FA</button>
+            </form>
+            <form action="${docroot}/user2fadisable" method="post" style="display:inline;">
+              <input type="hidden" name="username" value="${r['username']}">
+              <button class="btn btn-warning btn-xs" type="submit">Disable 2FA</button>
+            </form>
+            % if r['username'] != 'admin':
+            <form action="${docroot}/userdelete" method="post" style="display:inline;" onsubmit="return confirm('Delete user ${r['username']}?');">
+              <input type="hidden" name="username" value="${r['username']}">
+              <button class="btn btn-danger btn-xs" type="submit">Delete</button>
+            </form>
+            % endif
+          </td>
+        </tr>
+      % endfor
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="${docroot}/static/js/qrcode.min.js"></script>
+<script type="text/javascript">
+  (function() {
+    var blocks = document.querySelectorAll('.sf-qr[data-otpauth]');
+    for (var i = 0; i < blocks.length; i++) {
+      var el = blocks[i];
+      var uri = el.getAttribute('data-otpauth');
+      if (!uri) {
+        continue;
+      }
+      while (el.firstChild) {
+        el.removeChild(el.firstChild);
+      }
+      new QRCode(el, {
+        text: uri,
+        width: 128,
+        height: 128,
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+  })();
+</script>
+
+<%include file="FOOTER.tmpl"/>

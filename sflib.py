@@ -13,6 +13,7 @@
 import hashlib
 import inspect
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -966,10 +967,10 @@ class SpiderFoot:
         Returns:
             sock
         """
-        s = socket.socket()
-        s.settimeout(int(timeout))
-        s.connect((host, int(port)))
-        sock = ssl.wrap_socket(s)
+        raw_sock = socket.create_connection((host, int(port)), int(timeout))
+        raw_sock.settimeout(int(timeout))
+        ctx = ssl.create_default_context()
+        sock = ctx.wrap_socket(raw_sock, server_hostname=host)
         sock.do_handshake()
         return sock
 
@@ -1130,11 +1131,12 @@ class SpiderFoot:
         if not self.validIP(ip) and not self.validIP6(ip):
             return False
 
-        if netaddr.IPAddress(ip).is_private():
-            return True
-
-        if netaddr.IPAddress(ip).is_loopback():
-            return True
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            if ip_obj.is_private or ip_obj.is_loopback:
+                return True
+        except ValueError:
+            return False
 
         return False
 

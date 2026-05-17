@@ -10,16 +10,25 @@
 # License:      MIT
 # -----------------------------------------------------------------
 import csv
+import base64
+import hashlib
+import hmac
 import html
+import ipaddress
 import json
 import logging
 import multiprocessing as mp
+import os
 import random
+import re
 import string
+import struct
 import time
+from collections import Counter
 from copy import deepcopy
 from io import BytesIO, StringIO
 from operator import itemgetter
+from urllib.parse import quote
 
 import cherrypy
 from cherrypy import _cperror
@@ -28,6 +37,8 @@ from mako.lookup import TemplateLookup
 from mako.template import Template
 
 import openpyxl
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 import secure
 
@@ -51,6 +62,233 @@ class SpiderFootWebUi:
     config = dict()
     token = None
     docroot = ''
+    web_users = dict()
+
+    def _newscan_sidebar_stats(self: 'SpiderFootWebUi') -> dict:
+        """Build sidebar stats for HX-style new scan page."""
+        dbh = SpiderFootDb(self.config)
+        scans = dbh.scanInstanceList()
+        now = time.localtime()
+        scans_this_month = 0
+        for row in scans:
+            try:
+                created_ts = int(row[3])
+            except Exception:
+                continue
+            c = time.localtime(created_ts)
+            if c.tm_year == now.tm_year and c.tm_mon == now.tm_mon:
+                scans_this_month += 1
+
+        api_total = 0
+        api_configured = 0
+        for mod_name, mod_meta in self.config.get('__modules__', {}).items():
+            if mod_name.startswith("sfp__stor_"):
+                continue
+            mod_cfg = self.config.get(mod_name, {})
+            for opt_name in mod_meta.get('opts', {}).keys():
+                if "api_key" not in opt_name.lower():
+                    continue
+                api_total += 1
+                try:
+                    if isinstance(mod_cfg, dict) and str(mod_cfg.get(opt_name, "")).strip():
+                        api_configured += 1
+                except Exception:
+                    continue
+
+        return {
+            "scans_this_month": scans_this_month,
+            "scan_limit": 999,
+            "scan_duration_limit": "48 hours",
+            "max_targets_per_scan": 1024,
+            "data_retention_days": 180,
+            "api_total": api_total,
+            "api_configured": api_configured
+        }
+
+    def _passwd_file_path(self: 'SpiderFootWebUi') -> str:
+        return SpiderFootHelpers.dataPath() + "/passwd"
+
+    def _totp_file_path(self: 'SpiderFootWebUi') -> str:
+        return SpiderFootHelpers.dataPath() + "/users_2fa.json"
+
+    def _profiles_file_path(self: 'SpiderFootWebUi') -> str:
+        return SpiderFootHelpers.dataPath() + "/spiderfx_profiles.json"
+
+    def _load_passwd_map(self: 'SpiderFootWebUi') -> dict:
+        users = {}
+        passwd_file = self._passwd_file_path()
+        if not os.path.isfile(passwd_file):
+            return users
+        try:
+            with open(passwd_file, "r", encoding="utf-8") as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+                    u = line.split(":", 1)[0].strip()
+                    p = line.split(":", 1)[1].strip()
+                    if u:
+                        users[u] = p
+        except Exception as e:
+            self.log.error(f"Unable to load passwd map: {e}")
+        return users
+
+    def _save_passwd_map(self: 'SpiderFootWebUi', users: dict) -> bool:
+        passwd_file = self._passwd_file_path()
+        tmp_file = passwd_file + ".tmp"
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as fp:
+                for u in sorted(users.keys()):
+                    fp.write(f"{u}:{users[u]}\n")
+            os.replace(tmp_file, passwd_file)
+            return True
+        except Exception as e:
+            self.log.error(f"Unable to save passwd map: {e}")
+            return False
+
+    def _is_hashed_secret(self: 'SpiderFootWebUi', secret: str) -> bool:
+        if not isinstance(secret, str):
+            return False
+        return secret.startswith("pbkdf2_sha256$")
+
+    def _hash_password(self: 'SpiderFootWebUi', password: str, iterations: int = 240000) -> str:
+        salt = base64.b64encode(os.urandom(16)).decode("utf-8").rstrip("=")
+        pwd_hash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
+        h64 = base64.b64encode(pwd_hash).decode("utf-8").rstrip("=")
+        return f"pbkdf2_sha256${iterations}${salt}${h64}"
+
+    def _verify_secret(self: 'SpiderFootWebUi', username: str, password: str, stored_secret: str) -> bool:
+        if self._is_hashed_secret(stored_secret):
+            try:
+                _, iter_s, salt, hash_b64 = stored_secret.split("$", 3)
+                iterations = int(iter_s)
+                calc = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations)
+                calc_b64 = base64.b64encode(calc).decode("utf-8").rstrip("=")
+                return hmac.compare_digest(calc_b64, hash_b64)
+            except Exception:
+                return False
+
+        if not hmac.compare_digest(str(stored_secret), str(password)):
+            return False
+
+        # Transparent one-time migration from plaintext to PBKDF2 hash.
+        users = self._load_passwd_map()
+        if username in users:
+            users[username] = self._hash_password(password)
+            if self._save_passwd_map(users):
+                self.web_users = users
+        return True
+
+    def _load_totp_data(self: 'SpiderFootWebUi') -> dict:
+        path = self._totp_file_path()
+        if not os.path.isfile(path):
+            return {"users": {}}
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+                if not isinstance(data, dict):
+                    return {"users": {}}
+                if not isinstance(data.get("users"), dict):
+                    data["users"] = {}
+                return data
+        except Exception:
+            return {"users": {}}
+
+    def _save_totp_data(self: 'SpiderFootWebUi', data: dict) -> bool:
+        path = self._totp_file_path()
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fp:
+                json.dump(data, fp, indent=2)
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            self.log.error(f"Unable to save 2FA data: {e}")
+            return False
+
+    def _load_profiles_data(self: 'SpiderFootWebUi') -> dict:
+        path = self._profiles_file_path()
+        if not os.path.isfile(path):
+            return {"users": {}}
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+                if not isinstance(data, dict):
+                    return {"users": {}}
+                if not isinstance(data.get("users"), dict):
+                    data["users"] = {}
+                return data
+        except Exception:
+            return {"users": {}}
+
+    def _save_profiles_data(self: 'SpiderFootWebUi', data: dict) -> bool:
+        path = self._profiles_file_path()
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fp:
+                json.dump(data, fp, indent=2)
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            self.log.error(f"Unable to save profiles data: {e}")
+            return False
+
+    def _default_profile(self: 'SpiderFootWebUi', username: str) -> dict:
+        return {
+            "username": username,
+            "full_name": "",
+            "email": "",
+            "company": "",
+            "role": "",
+            "use_case": "",
+            "avatar_url": "",
+            "api_keys": []
+        }
+
+    def _get_profile(self: 'SpiderFootWebUi', username: str) -> dict:
+        profiles = self._load_profiles_data().get("users", {})
+        profile = profiles.get(username, {})
+        if not isinstance(profile, dict):
+            profile = {}
+        merged = self._default_profile(username)
+        for key in ["full_name", "email", "company", "role", "use_case"]:
+            merged[key] = str(profile.get(key, "") or "")
+        merged["avatar_url"] = str(profile.get("avatar_url", "") or "")
+        api_keys = profile.get("api_keys", [])
+        if not isinstance(api_keys, list):
+            api_keys = []
+        cleaned_keys = []
+        for item in api_keys:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            value = str(item.get("value", "")).strip()
+            if not name:
+                continue
+            cleaned_keys.append({"name": name, "value": value})
+        merged["api_keys"] = cleaned_keys[:100]
+        return merged
+
+    def _generate_totp_secret(self: 'SpiderFootWebUi') -> str:
+        return base64.b32encode(os.urandom(20)).decode("utf-8").rstrip("=")
+
+    def _totp_at(self: 'SpiderFootWebUi', secret: str, for_time: int, period: int = 30, digits: int = 6) -> str:
+        counter = int(for_time // period)
+        padded = secret + "=" * ((8 - len(secret) % 8) % 8)
+        key = base64.b32decode(padded, casefold=True)
+        msg = struct.pack(">Q", counter)
+        digest = hmac.new(key, msg, hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        code = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+        return str(code % (10 ** digits)).zfill(digits)
+
+    def _verify_totp(self: 'SpiderFootWebUi', secret: str, otp: str, skew_steps: int = 1) -> bool:
+        now = int(time.time())
+        for step in range(-skew_steps, skew_steps + 1):
+            candidate = self._totp_at(secret, now + (step * 30))
+            if hmac.compare_digest(candidate, otp):
+                return True
+        return False
 
     def __init__(self: 'SpiderFootWebUi', web_config: dict, config: dict, loggingQueue: 'logging.handlers.QueueListener' = None) -> None:
         """Initialize web server.
@@ -75,6 +313,7 @@ class SpiderFootWebUi:
             raise ValueError("web_config is empty")
 
         self.docroot = web_config.get('root', '/').rstrip('/')
+        self.web_users = web_config.get('auth_users', {})
 
         # 'config' supplied will be the defaults, let's supplement them
         # now with any configuration which may have previously been saved.
@@ -124,9 +363,11 @@ class SpiderFootWebUi:
     def error_page(self: 'SpiderFootWebUi') -> None:
         """Error page."""
         cherrypy.response.status = 500
+        tb = _cperror.format_exc()
+        self.log.error(f"Unhandled web exception: {tb}")
 
         if self.config.get('_debug'):
-            cherrypy.response.body = _cperror.get_error_page(status=500, traceback=_cperror.format_exc())
+            cherrypy.response.body = _cperror.get_error_page(status=500, traceback=tb)
         else:
             cherrypy.response.body = b"<html><body>Error</body></html>"
 
@@ -656,7 +897,7 @@ class SpiderFootWebUi:
         else:
             fname = scan_name + "-SpiderFoot.json"
 
-        cherrypy.response.headers['Content-Disposition'] = f"attachment; filename={fname}"
+        cherrypy.response.headers['Content-Disposition'] = f'attachment; filename="{fname}"'
         cherrypy.response.headers['Content-Type'] = "application/json; charset=utf-8"
         cherrypy.response.headers['Pragma'] = "no-cache"
         return json.dumps(scaninfo).encode('utf-8')
@@ -694,10 +935,18 @@ class SpiderFootWebUi:
         else:
             fname = scan_name + "SpiderFoot.gexf"
 
-        cherrypy.response.headers['Content-Disposition'] = f"attachment; filename={fname}"
+        cherrypy.response.headers['Content-Disposition'] = f'attachment; filename="{fname}"'
         cherrypy.response.headers['Content-Type'] = "application/gexf"
         cherrypy.response.headers['Pragma'] = "no-cache"
-        return SpiderFootHelpers.buildGraphGexf([root], "SpiderFoot Export", data)
+        try:
+            gexf_data = SpiderFootHelpers.buildGraphGexf([root], "SpiderFoot Export", data)
+            if isinstance(gexf_data, str):
+                return gexf_data.encode("utf-8")
+            return gexf_data
+        except Exception as e:
+            self.log.error(f"scanviz gexf export failed: {e}", exc_info=True)
+            cherrypy.response.status = 500
+            return b"Unable to generate GEXF export."
 
     @cherrypy.expose
     def scanvizmulti(self: 'SpiderFootWebUi', ids: str, gexf: str = "1") -> str:
@@ -741,7 +990,316 @@ class SpiderFootWebUi:
         cherrypy.response.headers['Content-Disposition'] = f"attachment; filename={fname}"
         cherrypy.response.headers['Content-Type'] = "application/gexf"
         cherrypy.response.headers['Pragma'] = "no-cache"
-        return SpiderFootHelpers.buildGraphGexf(roots, "SpiderFoot Export", data)
+        try:
+            gexf_data = SpiderFootHelpers.buildGraphGexf(roots, "SpiderFoot Export", data)
+            if isinstance(gexf_data, str):
+                return gexf_data.encode("utf-8")
+            return gexf_data
+        except Exception as e:
+            self.log.error(f"scanvizmulti gexf export failed: {e}", exc_info=True)
+            cherrypy.response.status = 500
+            return b"Unable to generate multi-scan GEXF export."
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def scanhx(self: 'SpiderFootWebUi', id: str) -> dict:
+        """Return HX-like analytics for a scan as JSON."""
+        return self._build_hx_analytics(id)
+
+    def _build_hx_analytics(self: 'SpiderFootWebUi', id: str) -> dict:
+        """Build HX-style analytics payload for a scan."""
+        if not id:
+            return {"error": "Scan ID not specified."}
+
+        dbh = SpiderFootDb(self.config)
+        scan = dbh.scanInstanceGet(id)
+        if not scan:
+            return {"error": "Invalid scan ID."}
+
+        rows = dbh.scanResultEvent(id, filterFp=True)
+        errors = dbh.scanErrors(id)
+        corr_rows = dbh.scanCorrelationSummary(id, by="risk")
+
+        modules = Counter()
+        event_types = Counter()
+        entities = Counter()
+        timeline = Counter()
+        ioc_types = Counter()
+        ioc_examples = []
+        ioc_seen = set()
+        unique_values = set()
+        unique_domains = set()
+        unique_ips = set()
+        attack_tactics = Counter()
+
+        domain_re = re.compile(r'^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$', re.I)
+
+        def attack_tactic_for_event(event_type: str) -> str:
+            et = event_type.upper()
+            if any(k in et for k in ["PASSWORD", "HASH", "COMPROMISED", "LEAK", "BREACH"]):
+                return "Credential Access"
+            if any(k in et for k in ["VULNERABILITY", "OPEN", "EXPOSED", "MISCONFIG"]):
+                return "Initial Access"
+            if any(k in et for k in ["MALICIOUS", "BLACKLISTED", "C2", "BOTNET", "TOR_SITE"]):
+                return "Command and Control"
+            if any(k in et for k in ["WEBSERVER", "SOFTWARE", "BANNER", "URL_", "TCP_PORT", "OS_", "FINGERPRINT"]):
+                return "Discovery"
+            if any(k in et for k in ["DOMAIN", "IP_ADDRESS", "INTERNET_NAME", "NETBLOCK", "EMAILADDR", "PHONE", "HUMAN_NAME", "USERNAME", "SOCIAL_MEDIA"]):
+                return "Reconnaissance"
+            return "Collection"
+
+        for row in rows:
+            generated = int(row[0])
+            value = str(row[1]) if row[1] is not None else ""
+            module = str(row[3]) if row[3] is not None else "unknown"
+            event_type = str(row[11]) if row[11] is not None else str(row[4])
+
+            modules[module] += 1
+            event_types[event_type] += 1
+            entities[value] += 1
+            attack_tactics[attack_tactic_for_event(event_type)] += 1
+            unique_values.add(value)
+            timeline[time.strftime("%Y-%m-%d", time.localtime(generated))] += 1
+
+            host = re.sub(r'^https?://', '', value.lower()).split('/')[0].split(':')[0]
+            if domain_re.match(host):
+                unique_domains.add(host)
+
+            try:
+                ipaddress.ip_address(host or value.strip())
+                unique_ips.add(host or value.strip())
+            except Exception:
+                pass
+
+            is_ioc = False
+            if event_type.startswith("MALICIOUS_") or event_type.startswith("BLACKLISTED_"):
+                is_ioc = True
+            if "COMPROMISED" in event_type:
+                is_ioc = True
+            if event_type.startswith("VULNERABILITY_"):
+                is_ioc = True
+            if event_type in ["LEAKSITE_URL", "LEAKSITE_CONTENT", "BREACH_SITE", "TOR_SITE"]:
+                is_ioc = True
+
+            if is_ioc:
+                ioc_types[event_type] += 1
+                ex_key = f"{event_type}:{value}"
+                if ex_key not in ioc_seen and len(ioc_examples) < 20:
+                    ioc_seen.add(ex_key)
+                    ioc_examples.append({"type": event_type, "value": value})
+
+        corr_counts = {risk: 0 for risk in ["HIGH", "MEDIUM", "LOW", "INFO"]}
+        for risk, total in corr_rows:
+            corr_counts[str(risk)] = int(total)
+
+        total_corr = sum(corr_counts.values())
+        weighted = (
+            corr_counts["HIGH"] * 40 +
+            corr_counts["MEDIUM"] * 15 +
+            corr_counts["LOW"] * 5 +
+            corr_counts["INFO"] * 1
+        )
+        if total_corr > 0:
+            risk_score = int(round((weighted / float(total_corr * 40)) * 100))
+        else:
+            ioc_total = sum(ioc_types.values())
+            risk_score = min(100, int(ioc_total / 5))
+
+        if risk_score >= 75:
+            risk_level = "CRITICAL"
+        elif risk_score >= 55:
+            risk_level = "HIGH"
+        elif risk_score >= 30:
+            risk_level = "MEDIUM"
+        elif risk_score > 0:
+            risk_level = "LOW"
+        else:
+            risk_level = "INFO"
+
+        def topn(counter_obj, key_name):
+            return [{key_name: k, "count": v} for k, v in counter_obj.most_common(15)]
+
+        return {
+            "scan": {
+                "id": id,
+                "name": scan[0],
+                "target": scan[1],
+                "started": scan[3],
+                "ended": scan[4],
+                "status": scan[5]
+            },
+            "kpi": {
+                "total_events": len(rows),
+                "unique_entities": len(unique_values),
+                "modules_used": len(modules),
+                "event_types": len(event_types),
+                "errors": len(errors),
+                "domains": len(unique_domains),
+                "ips": len(unique_ips),
+                "ioc_events": sum(ioc_types.values())
+            },
+            "risk": {
+                "score": risk_score,
+                "level": risk_level,
+                "correlations": corr_counts
+            },
+            "timeline": [{"date": d, "count": timeline[d]} for d in sorted(timeline.keys())],
+            "modules": topn(modules, "module"),
+            "event_types": topn(event_types, "event_type"),
+            "attack_tactics": topn(attack_tactics, "tactic"),
+            "entities": topn(entities, "value"),
+            "ioc_types": topn(ioc_types, "event_type"),
+            "ioc_examples": ioc_examples
+        }
+
+    @cherrypy.expose
+    def scanhxreportpdf(self: 'SpiderFootWebUi', id: str) -> bytes:
+        """Generate an executive HX-style PDF report for a scan."""
+        data = self._build_hx_analytics(id)
+        if data.get("error"):
+            return self.error(data.get("error"))
+
+        safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', str(data["scan"]["name"] or "SpiderFoot"))
+        fname = f"{safe_name}-HX-Report.pdf"
+
+        output = BytesIO()
+        pdf = canvas.Canvas(output, pagesize=letter)
+        width, height = letter
+        y = height - 40
+
+        def line(text: str, size: int = 10, bold: bool = False, indent: int = 40):
+            nonlocal y
+            if y < 50:
+                pdf.showPage()
+                y = height - 40
+            font_name = "Helvetica-Bold" if bold else "Helvetica"
+            pdf.setFont(font_name, size)
+            pdf.drawString(indent, y, str(text))
+            y -= (size + 4)
+
+        line("SpiderFoot HX-Like Executive Report", 16, True)
+        line(f"Scan Name: {data['scan']['name']}", 11, False)
+        line(f"Target: {data['scan']['target']}", 11, False)
+        line(f"Status: {data['scan']['status']}", 11, False)
+        line(f"Started: {data['scan']['started']}", 11, False)
+        line(f"Completed: {data['scan']['ended']}", 11, False)
+        y -= 6
+
+        line("Risk Summary", 13, True)
+        line(f"Risk Score: {data['risk']['score']} / 100")
+        line(f"Risk Level: {data['risk']['level']}")
+        corr = data["risk"]["correlations"]
+        line(f"Correlations: HIGH={corr.get('HIGH', 0)}  MEDIUM={corr.get('MEDIUM', 0)}  LOW={corr.get('LOW', 0)}  INFO={corr.get('INFO', 0)}")
+        y -= 4
+
+        line("Key Metrics", 13, True)
+        kpi = data["kpi"]
+        line(f"Total Events: {kpi['total_events']}")
+        line(f"Unique Entities: {kpi['unique_entities']}")
+        line(f"IOC Events: {kpi['ioc_events']}")
+        line(f"Domains: {kpi['domains']}  IPs: {kpi['ips']}")
+        line(f"Modules Used: {kpi['modules_used']}  Event Types: {kpi['event_types']}")
+        line(f"Errors: {kpi['errors']}")
+        y -= 4
+
+        line("Top ATT&CK-Like Tactics", 13, True)
+        for row in data.get("attack_tactics", [])[:8]:
+            line(f"- {row['tactic']}: {row['count']}")
+
+        y -= 4
+        line("Top IOC Event Types", 13, True)
+        for row in data.get("ioc_types", [])[:10]:
+            line(f"- {row['event_type']}: {row['count']}")
+
+        y -= 4
+        line("Top Modules", 13, True)
+        for row in data.get("modules", [])[:10]:
+            line(f"- {row['module']}: {row['count']}")
+
+        y -= 4
+        line("Top Entities", 13, True)
+        for row in data.get("entities", [])[:12]:
+            value = str(row["value"])
+            if len(value) > 90:
+                value = value[:87] + "..."
+            line(f"- {value}: {row['count']}")
+
+        pdf.showPage()
+        pdf.save()
+        payload = output.getvalue()
+        output.close()
+
+        cherrypy.response.headers['Content-Disposition'] = f"attachment; filename={fname}"
+        cherrypy.response.headers['Content-Type'] = "application/pdf"
+        cherrypy.response.headers['Pragma'] = "no-cache"
+        return payload
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def scanhxelement(self: 'SpiderFootWebUi', id: str, value: str) -> dict:
+        """Return detailed HX-like insights for one element value in a scan."""
+        if not id:
+            return {"error": "Scan ID not specified."}
+        if value is None:
+            return {"error": "Element value not specified."}
+
+        dbh = SpiderFootDb(self.config)
+        scan = dbh.scanInstanceGet(id)
+        if not scan:
+            return {"error": "Invalid scan ID."}
+
+        rows = dbh.scanResultEvent(id, filterFp=True)
+        target_value = str(value)
+        modules = Counter()
+        event_types = Counter()
+        parents = set()
+        children = set()
+        occurrences = 0
+        first_seen = None
+        last_seen = None
+        risky = False
+
+        for row in rows:
+            generated = int(row[0])
+            data_value = str(row[1]) if row[1] is not None else ""
+            source_value = str(row[2]) if row[2] is not None else ""
+            module = str(row[3]) if row[3] is not None else "unknown"
+            event_type = str(row[11]) if row[11] is not None else str(row[4])
+
+            if data_value == target_value:
+                occurrences += 1
+                modules[module] += 1
+                event_types[event_type] += 1
+                if source_value and source_value != data_value:
+                    parents.add(source_value)
+                if first_seen is None or generated < first_seen:
+                    first_seen = generated
+                if last_seen is None or generated > last_seen:
+                    last_seen = generated
+
+                et = event_type.upper()
+                if et.startswith("MALICIOUS_") or et.startswith("VULNERABILITY_") or "COMPROMISED" in et or et.startswith("BLACKLISTED_"):
+                    risky = True
+
+            if source_value == target_value and data_value and data_value != source_value:
+                children.add(data_value)
+
+        def topn(counter_obj, key_name):
+            return [{key_name: k, "count": v} for k, v in counter_obj.most_common(10)]
+
+        return {
+            "value": target_value,
+            "occurrences": occurrences,
+            "parent_count": len(parents),
+            "child_count": len(children),
+            "parents": list(parents)[:15],
+            "children": list(children)[:15],
+            "modules": topn(modules, "module"),
+            "event_types": topn(event_types, "event_type"),
+            "risky": risky,
+            "first_seen": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(first_seen)) if first_seen else "",
+            "last_seen": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_seen)) if last_seen else ""
+        }
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
@@ -915,10 +1473,11 @@ class SpiderFootWebUi:
         """
         dbh = SpiderFootDb(self.config)
         types = dbh.eventTypes()
+        sidebar = self._newscan_sidebar_stats()
         templ = Template(filename='spiderfoot/templates/newscan.tmpl', lookup=self.lookup)
         return templ.render(pageid='NEWSCAN', types=types, docroot=self.docroot,
                             modules=self.config['__modules__'], scanname="",
-                            selectedmods="", scantarget="", version=__version__)
+                            selectedmods="", scantarget="", sidebar=sidebar, version=__version__)
 
     @cherrypy.expose
     def clonescan(self: 'SpiderFootWebUi', id: str) -> str:
@@ -951,22 +1510,647 @@ class SpiderFootWebUi:
             scantarget = "&quot;" + scantarget + "&quot;"
 
         modlist = scanconfig['_modulesenabled'].split(',')
+        sidebar = self._newscan_sidebar_stats()
 
         templ = Template(filename='spiderfoot/templates/newscan.tmpl', lookup=self.lookup)
         return templ.render(pageid='NEWSCAN', types=types, docroot=self.docroot,
                             modules=self.config['__modules__'], selectedmods=modlist,
                             scanname=str(scanname),
-                            scantarget=str(scantarget), version=__version__)
+                            scantarget=str(scantarget), sidebar=sidebar, version=__version__)
 
     @cherrypy.expose
     def index(self: 'SpiderFootWebUi') -> str:
-        """Show scan list page.
+        """Show public spiderFX homepage.
+
+        Returns:
+            str: Homepage HTML
+        """
+        return self.fx()
+
+    @cherrypy.expose
+    def console(self: 'SpiderFootWebUi') -> str:
+        """Show authenticated scan list console.
 
         Returns:
             str: Scan list page HTML
         """
         templ = Template(filename='spiderfoot/templates/scanlist.tmpl', lookup=self.lookup)
         return templ.render(pageid='SCANLIST', docroot=self.docroot, version=__version__)
+
+    @cherrypy.expose
+    def fx(self: 'SpiderFootWebUi') -> str:
+        """Public spiderFX homepage."""
+        dbh = SpiderFootDb(self.config)
+        scans = dbh.scanInstanceList()
+        scan_count = len(scans)
+        active_count = 0
+        for row in scans:
+            if str(row[6]) in ["RUNNING", "STARTING", "STARTED"]:
+                active_count += 1
+
+        featured_tools = [
+            "Amass", "Subfinder", "Nuclei", "Katana", "Naabu", "HTTPX",
+            "FFUF", "CMSeeK", "TruffleHog", "PhoneInfoga", "Sherlock", "theHarvester"
+        ]
+        stats = self._newscan_sidebar_stats()
+        templ = Template(filename='spiderfoot/templates/fx_home.tmpl', lookup=self.lookup)
+        return templ.render(
+            docroot=self.docroot,
+            version=__version__,
+            scan_count=scan_count,
+            active_count=active_count,
+            featured_tools=featured_tools,
+            api_configured=stats.get("api_configured", 0),
+            api_total=stats.get("api_total", 0)
+        )
+
+    @cherrypy.expose
+    def signin(self: 'SpiderFootWebUi', next_url: str = None, error: str = None, success: str = None,
+               otp_required: str = None) -> str:
+        """Public spiderFX sign-in page."""
+        if cherrypy.session.get("authenticated"):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/console")
+        show_otp = bool(otp_required) or bool(cherrypy.session.get("pending_2fa_user"))
+        pending_user = cherrypy.session.get("pending_2fa_user")
+        templ = Template(filename='spiderfoot/templates/signin.tmpl', lookup=self.lookup)
+        return templ.render(docroot=self.docroot, version=__version__, next_url=next_url, error=error,
+                            success=success, show_otp=show_otp, pending_user=pending_user)
+
+    @cherrypy.expose
+    def signinsubmit(self: 'SpiderFootWebUi', username: str = "", password: str = "", otp: str = "",
+                     next_url: str = None) -> None:
+        """Sign-in handoff endpoint.
+
+        spiderFX uses session auth backed by SpiderFoot passwd credentials.
+        """
+        username = (username or "").strip()
+        password = (password or "").strip()
+        otp = re.sub(r"\s+", "", otp or "")
+        if len(username) < 2:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=Please+enter+your+username")
+        if len(password) < 1 and not cherrypy.session.get("pending_2fa_user"):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=Please+enter+your+password")
+
+        users = self._load_passwd_map()
+        self.web_users = users
+        pending_user = cherrypy.session.get("pending_2fa_user")
+        pending_next = cherrypy.session.get("pending_2fa_next") or "/console"
+
+        if pending_user:
+            if username != pending_user:
+                cherrypy.session.pop("pending_2fa_user", None)
+                cherrypy.session.pop("pending_2fa_next", None)
+                raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=Please+retry+signin")
+
+            totp = self._load_totp_data().get("users", {}).get(username, {})
+            secret = str(totp.get("secret", ""))
+            enabled = bool(totp.get("enabled", False))
+            if not enabled or not secret:
+                cherrypy.session.pop("pending_2fa_user", None)
+                cherrypy.session.pop("pending_2fa_next", None)
+                raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=2FA+is+not+configured")
+            if not otp or not re.match(r"^\d{6}$", otp) or not self._verify_totp(secret, otp):
+                nxt_q = quote(pending_next, safe="")
+                raise cherrypy.HTTPRedirect(
+                    f"{self.docroot}/signin?error=Invalid+2FA+code&otp_required=1&next_url={nxt_q}"
+                )
+            cherrypy.session.pop("pending_2fa_user", None)
+            cherrypy.session.pop("pending_2fa_next", None)
+            username = pending_user
+        else:
+            expected = users.get(username, None)
+            if expected is None or not self._verify_secret(username, password, expected):
+                nxt = "/console"
+                if next_url and isinstance(next_url, str) and next_url.startswith("/"):
+                    nxt = next_url
+                nxt_q = quote(nxt, safe="")
+                raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=Invalid+credentials&next_url={nxt_q}")
+
+            user_totp = self._load_totp_data().get("users", {}).get(username, {})
+            if bool(user_totp.get("enabled", False)):
+                nxt = "/console"
+                if next_url and isinstance(next_url, str) and next_url.startswith("/"):
+                    nxt = next_url
+                cherrypy.session["pending_2fa_user"] = username
+                cherrypy.session["pending_2fa_next"] = nxt
+                nxt_q = quote(nxt, safe="")
+                raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?otp_required=1&next_url={nxt_q}")
+
+        cherrypy.session.regenerate()
+        cherrypy.session["authenticated"] = True
+        cherrypy.session["username"] = username
+
+        target = f"{self.docroot}/console"
+        chosen_next = pending_next if pending_user else next_url
+        if chosen_next and isinstance(chosen_next, str) and chosen_next.startswith("/") and not chosen_next.startswith("//"):
+            target = f"{self.docroot}{chosen_next}"
+        elif next_url and isinstance(next_url, str) and next_url.startswith("/") and not next_url.startswith("//"):
+            target = f"{self.docroot}{next_url}"
+        raise cherrypy.HTTPRedirect(target)
+
+    @cherrypy.expose
+    def signout(self: 'SpiderFootWebUi') -> None:
+        """End spiderFX session."""
+        cherrypy.session.pop("authenticated", None)
+        cherrypy.session.pop("username", None)
+        cherrypy.session.pop("pending_2fa_user", None)
+        cherrypy.session.pop("pending_2fa_next", None)
+        cherrypy.session.regenerate()
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/signin")
+
+    @cherrypy.expose
+    def profile(self: 'SpiderFootWebUi', msg: str = None, error: str = None) -> str:
+        """User profile and account settings page."""
+        username = self._require_signed_in_user()
+        profile = self._get_profile(username)
+        totp_data = self._load_totp_data()
+        user_totp = totp_data.get("users", {}).get(username, {})
+        twofa_enabled = bool(user_totp.get("enabled", False))
+        pending_secret = str(cherrypy.session.get("profile_2fa_secret", "") or "")
+        templ = Template(filename='spiderfoot/templates/profile.tmpl', lookup=self.lookup)
+        return templ.render(
+            docroot=self.docroot,
+            version=__version__,
+            pageid="PROFILE",
+            username=username,
+            profile=profile,
+            twofa_enabled=twofa_enabled,
+            pending_2fa_secret=pending_secret,
+            pending_2fa_otpauth=(
+                f"otpauth://totp/spiderFX:{username}?secret={pending_secret}&issuer=spiderFX"
+                if pending_secret else ""
+            ),
+            msg=msg,
+            error=error
+        )
+
+    @cherrypy.expose
+    def profileupdate(self: 'SpiderFootWebUi', full_name: str = "", email: str = "", company: str = "",
+                      role: str = "", use_case: str = "", avatar_url: str = "") -> None:
+        """Update signed-in user profile fields."""
+        username = self._require_signed_in_user()
+        full_name = (full_name or "").strip()
+        email = (email or "").strip().lower()
+        company = (company or "").strip()
+        role = (role or "").strip()
+        use_case = (use_case or "").strip()
+        avatar_url = (avatar_url or "").strip()
+
+        if email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Please+enter+a+valid+email")
+        if avatar_url and not re.match(r"^https?://[^\s]+$", avatar_url):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Avatar+URL+must+start+with+http(s)://")
+
+        profiles_data = self._load_profiles_data()
+        users = profiles_data.setdefault("users", {})
+        old_profile = users.get(username, {})
+        old_api_keys = []
+        if isinstance(old_profile, dict) and isinstance(old_profile.get("api_keys"), list):
+            old_api_keys = old_profile.get("api_keys", [])
+        users[username] = {
+            "full_name": full_name,
+            "email": email,
+            "company": company,
+            "role": role,
+            "use_case": use_case,
+            "avatar_url": avatar_url,
+            "api_keys": old_api_keys
+        }
+        if not self._save_profiles_data(profiles_data):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Unable+to+save+profile")
+
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=Profile+updated")
+
+    @cherrypy.expose
+    def profileapikeys(self: 'SpiderFootWebUi', api_keys_json: str = "") -> None:
+        """Update signed-in user personal API key vault."""
+        username = self._require_signed_in_user()
+        raw = (api_keys_json or "").strip()
+        if not raw:
+            parsed = []
+        else:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Invalid+API+vault+payload")
+            if not isinstance(parsed, list):
+                raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Invalid+API+vault+payload")
+
+        cleaned = []
+        for item in parsed[:100]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            value = str(item.get("value", "")).strip()
+            if not name:
+                continue
+            if len(name) > 100 or len(value) > 5000:
+                continue
+            cleaned.append({"name": name, "value": value})
+
+        profiles_data = self._load_profiles_data()
+        users = profiles_data.setdefault("users", {})
+        old = users.get(username, {})
+        if not isinstance(old, dict):
+            old = {}
+        users[username] = {
+            "full_name": str(old.get("full_name", "") or ""),
+            "email": str(old.get("email", "") or ""),
+            "company": str(old.get("company", "") or ""),
+            "role": str(old.get("role", "") or ""),
+            "use_case": str(old.get("use_case", "") or ""),
+            "avatar_url": str(old.get("avatar_url", "") or ""),
+            "api_keys": cleaned
+        }
+        if not self._save_profiles_data(profiles_data):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Unable+to+save+API+vault")
+
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=API+vault+updated")
+
+    @cherrypy.expose
+    def changepassword(self: 'SpiderFootWebUi', current_password: str = "", new_password: str = "",
+                       confirm_password: str = "") -> None:
+        """Change password for signed-in user."""
+        username = self._require_signed_in_user()
+        current_password = (current_password or "").strip()
+        new_password = (new_password or "").strip()
+        confirm_password = (confirm_password or "").strip()
+
+        if len(current_password) < 1:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Please+enter+current+password")
+        if len(new_password) < 10:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=New+password+must+be+at+least+10+characters")
+        if new_password != confirm_password:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=New+passwords+do+not+match")
+        if new_password == current_password:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=New+password+must+be+different")
+
+        users = self._load_passwd_map()
+        stored = users.get(username)
+        if not stored or not self._verify_secret(username, current_password, stored):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Current+password+is+incorrect")
+
+        users[username] = self._hash_password(new_password)
+        if not self._save_passwd_map(users):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Unable+to+update+password")
+
+        self.web_users = users
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=Password+updated")
+
+    @cherrypy.expose
+    def profile2fasetup(self: 'SpiderFootWebUi') -> None:
+        """Start self-service 2FA setup for signed-in user."""
+        username = self._require_signed_in_user()
+        totp_data = self._load_totp_data()
+        user_totp = totp_data.get("users", {}).get(username, {})
+        if bool(user_totp.get("enabled", False)):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=2FA+already+enabled")
+        cherrypy.session["profile_2fa_secret"] = self._generate_totp_secret()
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=Scan+the+QR+and+verify+code+to+enable+2FA")
+
+    @cherrypy.expose
+    def profile2faenable(self: 'SpiderFootWebUi', otp: str = "") -> None:
+        """Finalize self-service 2FA setup by verifying OTP."""
+        username = self._require_signed_in_user()
+        otp = re.sub(r"\s+", "", otp or "")
+        secret = str(cherrypy.session.get("profile_2fa_secret", "") or "")
+        if not secret:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=No+pending+2FA+setup")
+        if not re.match(r"^\d{6}$", otp) or not self._verify_totp(secret, otp):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Invalid+2FA+code")
+
+        totp_data = self._load_totp_data()
+        totp_data.setdefault("users", {})[username] = {"enabled": True, "secret": secret}
+        if not self._save_totp_data(totp_data):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Unable+to+enable+2FA")
+        cherrypy.session.pop("profile_2fa_secret", None)
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=2FA+enabled")
+
+    @cherrypy.expose
+    def profile2facancel(self: 'SpiderFootWebUi') -> None:
+        """Cancel pending self-service 2FA setup."""
+        self._require_signed_in_user()
+        cherrypy.session.pop("profile_2fa_secret", None)
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=2FA+setup+canceled")
+
+    @cherrypy.expose
+    def profile2fadisable(self: 'SpiderFootWebUi', current_password: str = "") -> None:
+        """Disable self-service 2FA for signed-in user after password check."""
+        username = self._require_signed_in_user()
+        current_password = (current_password or "").strip()
+        if len(current_password) < 1:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Please+enter+your+password")
+
+        users = self._load_passwd_map()
+        stored = users.get(username)
+        if not stored or not self._verify_secret(username, current_password, stored):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Current+password+is+incorrect")
+
+        totp_data = self._load_totp_data()
+        if username in totp_data.get("users", {}):
+            totp_data["users"][username]["enabled"] = False
+        if not self._save_totp_data(totp_data):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?error=Unable+to+disable+2FA")
+        cherrypy.session.pop("profile_2fa_secret", None)
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/profile?msg=2FA+disabled")
+
+    @cherrypy.expose
+    def signup(self: 'SpiderFootWebUi', success: str = None, error: str = None) -> str:
+        """Public spiderFX sign-up page."""
+        templ = Template(filename='spiderfoot/templates/signup.tmpl', lookup=self.lookup)
+        return templ.render(docroot=self.docroot, version=__version__, success=success, error=error)
+
+    @cherrypy.expose
+    def signupsubmit(self: 'SpiderFootWebUi', full_name: str = "", email: str = "", company: str = "",
+                     role: str = "", use_case: str = "", username: str = "", password: str = "",
+                     confirm_password: str = "") -> None:
+        """Store sign-up interest for spiderFX onboarding."""
+        full_name = (full_name or "").strip()
+        email = (email or "").strip().lower()
+        company = (company or "").strip()
+        role = (role or "").strip()
+        use_case = (use_case or "").strip()
+        username = (username or "").strip()
+        password = (password or "").strip()
+        confirm_password = (confirm_password or "").strip()
+
+        if len(full_name) < 2:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Please+enter+your+name")
+
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Please+enter+a+valid+email")
+        if not re.match(r"^[a-zA-Z0-9_.-]{3,32}$", username):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Choose+a+valid+username+(3-32,+letters/numbers/._-)")
+        if len(password) < 10:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Password+must+be+at+least+10+characters")
+        if password != confirm_password:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Passwords+do+not+match")
+
+        csv_file = SpiderFootHelpers.dataPath() + "/spiderfx_signups.csv"
+        try:
+            new_file = False
+            try:
+                with open(csv_file, "r", encoding="utf-8"):
+                    pass
+            except FileNotFoundError:
+                new_file = True
+
+            with open(csv_file, "a", encoding="utf-8", newline="") as fp:
+                writer = csv.writer(fp)
+                if new_file:
+                    writer.writerow(["timestamp", "username", "full_name", "email", "company", "role", "use_case"])
+                writer.writerow([int(time.time()), username, full_name, email, company, role, use_case])
+        except Exception as e:
+            self.log.error(f"Unable to save spiderFX signup: {e}")
+            # Do not block account creation if analytics logging fails.
+
+        users = self._load_passwd_map()
+        if username in users:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Username+already+exists")
+        users[username] = self._hash_password(password)
+        if not self._save_passwd_map(users):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signup?error=Could+not+create+login+account")
+        self.web_users = users
+
+        profiles_data = self._load_profiles_data()
+        users_profiles = profiles_data.setdefault("users", {})
+        users_profiles[username] = {
+            "full_name": full_name,
+            "email": email,
+            "company": company,
+            "role": role,
+            "use_case": use_case,
+            "avatar_url": "",
+            "api_keys": []
+        }
+        if not self._save_profiles_data(profiles_data):
+            self.log.error(f"Unable to persist profile data for user {username}")
+
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?success=Account+created.+Please+sign+in")
+
+    def _require_admin(self: 'SpiderFootWebUi') -> str:
+        user = cherrypy.session.get("username")
+        if user != "admin":
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=Admin+access+required")
+        return user
+
+    def _require_signed_in_user(self: 'SpiderFootWebUi') -> str:
+        user = cherrypy.session.get("username")
+        if not user or not cherrypy.session.get("authenticated"):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/signin?error=Please+sign+in")
+        return str(user)
+
+    @cherrypy.expose
+    def usermgmt(self: 'SpiderFootWebUi', msg: str = None, error: str = None, show_secret_for: str = None) -> str:
+        """Admin user management panel."""
+        self._require_admin()
+        users = self._load_passwd_map()
+        self.web_users = users
+        totp_data = self._load_totp_data()
+        totp_users = totp_data.get("users", {})
+        rows = []
+        for username in sorted(users.keys()):
+            u2fa = totp_users.get(username, {})
+            secret = str(u2fa.get("secret", ""))
+            rows.append({
+                "username": username,
+                "hashed": self._is_hashed_secret(users[username]),
+                "twofa_enabled": bool(u2fa.get("enabled", False)),
+                "secret": secret if show_secret_for == username else "",
+                "otpauth": f"otpauth://totp/spiderFX:{username}?secret={secret}&issuer=spiderFX"
+                if show_secret_for == username and secret else ""
+            })
+        templ = Template(filename='spiderfoot/templates/usermgmt.tmpl', lookup=self.lookup)
+        return templ.render(docroot=self.docroot, pageid="USERMGMT", version=__version__, rows=rows,
+                            msg=msg, error=error, show_secret_for=show_secret_for)
+
+    @cherrypy.expose
+    def usercreate(self: 'SpiderFootWebUi', username: str = "", password: str = "") -> None:
+        """Create a new login user (admin only)."""
+        self._require_admin()
+        username = (username or "").strip()
+        password = (password or "").strip()
+        if not re.match(r"^[a-zA-Z0-9_.-]{3,32}$", username):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Invalid+username")
+        if len(password) < 10:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Password+must+be+at+least+10+chars")
+        users = self._load_passwd_map()
+        if username in users:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Username+already+exists")
+        users[username] = self._hash_password(password)
+        if not self._save_passwd_map(users):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Unable+to+save+user")
+        self.web_users = users
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?msg=User+created")
+
+    @cherrypy.expose
+    def userdelete(self: 'SpiderFootWebUi', username: str = "") -> None:
+        """Delete a login user (admin only)."""
+        self._require_admin()
+        username = (username or "").strip()
+        if username == "admin":
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Cannot+delete+admin")
+        users = self._load_passwd_map()
+        if username not in users:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=User+not+found")
+        users.pop(username, None)
+        if not self._save_passwd_map(users):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Unable+to+delete+user")
+        self.web_users = users
+        totp_data = self._load_totp_data()
+        totp_data.setdefault("users", {}).pop(username, None)
+        self._save_totp_data(totp_data)
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?msg=User+deleted")
+
+    @cherrypy.expose
+    def user2faenable(self: 'SpiderFootWebUi', username: str = "") -> None:
+        """Enable or rotate TOTP 2FA for a user (admin only)."""
+        self._require_admin()
+        username = (username or "").strip()
+        users = self._load_passwd_map()
+        if username not in users:
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=User+not+found")
+        totp_data = self._load_totp_data()
+        secret = self._generate_totp_secret()
+        totp_data.setdefault("users", {})[username] = {"enabled": True, "secret": secret}
+        if not self._save_totp_data(totp_data):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Unable+to+save+2FA")
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?msg=2FA+enabled&show_secret_for={quote(username, safe='')}")
+
+    @cherrypy.expose
+    def user2fadisable(self: 'SpiderFootWebUi', username: str = "") -> None:
+        """Disable TOTP 2FA for a user (admin only)."""
+        self._require_admin()
+        username = (username or "").strip()
+        totp_data = self._load_totp_data()
+        if username in totp_data.get("users", {}):
+            totp_data["users"][username]["enabled"] = False
+        if not self._save_totp_data(totp_data):
+            raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?error=Unable+to+update+2FA")
+        raise cherrypy.HTTPRedirect(f"{self.docroot}/usermgmt?msg=2FA+disabled")
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def fxhealth(self: 'SpiderFootWebUi') -> dict:
+        """Public health and capability summary for spiderFX landing pages."""
+        dbh = SpiderFootDb(self.config)
+        scans = dbh.scanInstanceList()
+        active = 0
+        completed = 0
+        for row in scans:
+            status = str(row[6])
+            if status in ["RUNNING", "STARTING", "STARTED"]:
+                active += 1
+            if status in ["FINISHED", "ABORTED", "ERROR-FAILED"]:
+                completed += 1
+        modules_total = len(self.config.get("__modules__", {}))
+        integrations = []
+        for mod in self.config.get("__modules__", {}).keys():
+            if mod.startswith("sfp_tool_"):
+                integrations.append(mod.replace("sfp_tool_", ""))
+
+        return {
+            "brand": "spiderFX",
+            "version": __version__,
+            "scans_total": len(scans),
+            "scans_active": active,
+            "scans_completed": completed,
+            "modules_total": modules_total,
+            "integrations_total": len(integrations),
+            "integrations_sample": sorted(integrations)[:20]
+        }
+
+    @cherrypy.expose
+    def investigate(self: 'SpiderFootWebUi') -> str:
+        """Show investigations-oriented view of notable correlations."""
+        dbh = SpiderFootDb(self.config)
+        scans = dbh.scanInstanceList()
+        rows = []
+        for scan in scans[:30]:
+            scan_id = scan[0]
+            scan_name = scan[1]
+            status = scan[6]
+            if str(status) not in ["FINISHED", "ABORTED", "ERROR-FAILED"]:
+                continue
+            corr = dbh.scanCorrelationList(scan_id)
+            for item in corr:
+                risk = str(item[3])
+                if risk not in ["HIGH", "MEDIUM", "LOW"]:
+                    continue
+                rows.append({
+                    "scan_id": scan_id,
+                    "scan_name": scan_name,
+                    "title": item[1],
+                    "risk": risk,
+                    "count": item[7]
+                })
+        risk_weight = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+        rows.sort(key=lambda r: (risk_weight.get(r["risk"], 0), int(r["count"])), reverse=True)
+
+        templ = Template(filename='spiderfoot/templates/investigate.tmpl', lookup=self.lookup)
+        return templ.render(pageid='INVESTIGATE', docroot=self.docroot, rows=rows[:200], version=__version__)
+
+    @cherrypy.expose
+    def monitor(self: 'SpiderFootWebUi') -> str:
+        """Show monitor-style change summary across targets."""
+        dbh = SpiderFootDb(self.config)
+        scans = dbh.scanInstanceList()
+        by_target = {}
+        for row in scans:
+            target = row[2]
+            by_target.setdefault(target, []).append(row)
+
+        monitor_rows = []
+        for target, target_scans in by_target.items():
+            target_scans.sort(key=lambda x: int(x[3] or 0), reverse=True)
+            if len(target_scans) < 2:
+                continue
+            latest = target_scans[0]
+            prev = target_scans[1]
+            latest_unique = dbh.scanResultEventUnique(latest[0], filterFp=True)
+            prev_unique = dbh.scanResultEventUnique(prev[0], filterFp=True)
+
+            latest_vals = set([str(x[0]) for x in latest_unique])
+            prev_vals = set([str(x[0]) for x in prev_unique])
+            added = latest_vals - prev_vals
+            removed = prev_vals - latest_vals
+
+            latest_events = dbh.scanResultEvent(latest[0], filterFp=True)
+            prev_events = dbh.scanResultEvent(prev[0], filterFp=True)
+
+            def risky_count(events):
+                cnt = 0
+                for e in events:
+                    et = str(e[11])
+                    if et.startswith("MALICIOUS_") or et.startswith("VULNERABILITY_") or "COMPROMISED" in et:
+                        cnt += 1
+                return cnt
+
+            latest_risky = risky_count(latest_events)
+            prev_risky = risky_count(prev_events)
+
+            monitor_rows.append({
+                "target": target,
+                "latest_scan": latest[1],
+                "latest_scan_id": latest[0],
+                "previous_scan": prev[1],
+                "added": len(added),
+                "removed": len(removed),
+                "risky_delta": latest_risky - prev_risky,
+                "latest_elements": len(latest_unique),
+                "previous_elements": len(prev_unique)
+            })
+
+        monitor_rows.sort(key=lambda r: (r["added"] + abs(r["risky_delta"])), reverse=True)
+
+        templ = Template(filename='spiderfoot/templates/monitor.tmpl', lookup=self.lookup)
+        return templ.render(pageid='MONITOR', docroot=self.docroot, rows=monitor_rows[:100], version=__version__)
+
+    @cherrypy.expose
+    def apidocs(self: 'SpiderFootWebUi') -> str:
+        """Show API docs page."""
+        templ = Template(filename='spiderfoot/templates/apidocs.tmpl', lookup=self.lookup)
+        return templ.render(pageid='APIDOCS', docroot=self.docroot, version=__version__)
 
     @cherrypy.expose
     def scaninfo(self: 'SpiderFootWebUi', id: str) -> str:
@@ -1455,9 +2639,56 @@ class SpiderFootWebUi:
 
         # User selected a use case
         if len(modlist) == 0 and usecase:
-            for mod in self.config['__modules__']:
-                if usecase == 'all' or usecase in self.config['__modules__'][mod]['group']:
-                    modlist.append(mod)
+            if usecase == 'DeepRecon':
+                # Opinionated high-coverage recon preset focused on the custom
+                # ProjectDiscovery/Kali-style modules integrated on this host.
+                deep_recon_modules = [
+                    "sfp_dnsresolve",
+                    "sfp_dnsbrute",
+                    "sfp_spider",
+                    "sfp_torch",
+                    "sfp_ahmia",
+                    "sfp_onionsearchengine",
+                    "sfp_tool_subfinder",
+                    "sfp_tool_amass",
+                    "sfp_tool_dnsx",
+                    "sfp_tool_naabu",
+                    "sfp_tool_httpx",
+                    "sfp_tool_katana",
+                    "sfp_tool_gau",
+                    "sfp_tool_waybackurls",
+                    "sfp_tool_tlsx",
+                    "sfp_tool_nuclei",
+                    "sfp_tool_uncover",
+                    "sfp_tool_dnstwist",
+                    "sfp_tool_cmseek",
+                    "sfp_tool_trufflehog",
+                    "sfp_tool_searchsploit",
+                    "sfp_tool_ffuf",
+                    "sfp_tool_maigret",
+                    "sfp_tool_h8mail",
+                    "sfp_tool_bbot",
+                    "sfp_tool_theharvester",
+                    "sfp_tool_holehe",
+                    "sfp_tool_sherlock",
+                    "sfp_tool_phoneinfoga",
+                    "sfp_tool_metagoofil",
+                    "sfp_osint_portals",
+                    "sfp_mcp_server",
+                ]
+                for mod_name, opt_name in [
+                    ("sfp_haveibeenpwned", "api_key"),
+                    ("sfp_greynoise", "api_key"),
+                    ("sfp_intelx", "api_key"),
+                ]:
+                    mod_cfg = self.config.get(mod_name, {})
+                    if isinstance(mod_cfg, dict) and str(mod_cfg.get(opt_name, "")).strip():
+                        deep_recon_modules.append(mod_name)
+                modlist = [m for m in deep_recon_modules if m in self.config['__modules__']]
+            else:
+                for mod in self.config['__modules__']:
+                    if usecase == 'all' or usecase in self.config['__modules__'][mod]['group']:
+                        modlist.append(mod)
 
         # If we somehow got all the way through to here and still don't have any modules selected
         if not modlist:

@@ -52,7 +52,9 @@ a {
   color: #fff;
 }
 
-.active a {
+.navbar-default .navbar-nav > .active > a,
+.navbar-default .navbar-nav > .active > a:focus,
+.navbar-default .navbar-nav > .active > a:hover {
   background-color: #3a3a3a !important;
   color: #fff !important;
 }
@@ -184,6 +186,71 @@ tr.danger {
 
 .dropdown-menu > li > a {
   color: #fff !important;
+}
+
+/* Keep topbar dropdowns readable in HX theme while dark mode is enabled */
+.hx-topbar .navbar-nav > li > .dropdown-menu {
+  background-color: #333 !important;
+  border-color: #4a4a4a !important;
+}
+
+.hx-topbar .navbar-nav > li > .dropdown-menu > li > a {
+  color: #f2f2f2 !important;
+}
+
+.hx-topbar .navbar-nav > li > .dropdown-menu > li > a:hover,
+.hx-topbar .navbar-nav > li > .dropdown-menu > li > a:focus {
+  background-color: #444 !important;
+  color: #fff !important;
+}
+
+/* HX page contrast improvements */
+body .hx-mainbody,
+body .hx-card,
+body .panel,
+body .panel-body,
+body .table,
+body .table td,
+body .table th,
+body .help-block,
+body label,
+body p,
+body li,
+body .text-muted {
+  color: #e6edf5 !important;
+}
+
+body .hx-page-title,
+body .panel-title,
+body h1,
+body h2,
+body h3,
+body h4 {
+  color: #eaf2fb !important;
+}
+
+body .hx-heading {
+  background: #2f3c4a !important;
+  color: #8fd4ff !important;
+  border-top-color: #2aa6db !important;
+}
+
+body .panel-default.hx-card,
+body .panel-default,
+body .well,
+body .alert-info {
+  background-color: #32363c !important;
+  border-color: #4a4f57 !important;
+}
+
+body .form-control::placeholder,
+body input::placeholder,
+body textarea::placeholder {
+  color: #aeb8c5 !important;
+}
+
+body .nav-tabs > li > a {
+  color: #e8f3ff !important;
 }
 
 .nav-tabs {

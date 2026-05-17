@@ -40,11 +40,11 @@ class sfp_tool_trufflehog(SpiderFootPlugin):
     opts = {
         'entropy': False,
         'allrepos': False,
-        'trufflehog_path': ''
+        'trufflehog_path': '/usr/local/bin/trufflehog'
     }
 
     optdescs = {
-        'trufflehog_path': "Path to your trufflehog binary. Must be set.",
+        'trufflehog_path': "Path to your trufflehog binary.",
         'entropy': "Enable entropy checks? If disabled, TruffleHog will solely rely on high-signal regular expressions to identify secrets.",
         'allrepos': "Search all code repositories found. By default TruffleHog only searches those linked from the target website."
     }

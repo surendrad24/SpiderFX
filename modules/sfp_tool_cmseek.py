@@ -37,14 +37,14 @@ class sfp_tool_cmseek(SpiderFootPlugin):
 
     # Default options
     opts = {
-        'pythonpath': "python3",
-        'cmseekpath': ""
+        'pythonpath': "/www/wwwroot/spiderfoot.zwaapi.com/.venv/bin/python",
+        'cmseekpath': "/opt/osint-tools/CMSeeK"
     }
 
     # Option descriptions
     optdescs = {
         'pythonpath': "Path to Python 3 interpreter to use for CMSeeK. If just 'python3' then it must be in your PATH.",
-        'cmseekpath': "Path to the where the cmseek.py file lives. Must be set."
+        'cmseekpath': "Path to the where the cmseek.py file lives."
     }
 
     results = None

@@ -126,9 +126,14 @@ class sfp_stevenblack_hosts(SpiderFootPlugin):
         for line in blocklist.split('\n'):
             if not line:
                 continue
-            if line.startswith('#'):
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
-            host = line.strip().split(" ")[1]
+            parts = line.split()
+            # Expected format: "IP_ADDRESS HOSTNAME". Skip malformed entries.
+            if len(parts) < 2:
+                continue
+            host = parts[1].strip()
             # Note: Validation with sf.validHost() is too slow to use here
             # if not self.sf.validHost(host, self.opts['_internettlds']):
             #    continue

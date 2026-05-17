@@ -1,0 +1,149 @@
+<%include file="HEADER.tmpl"/>
+
+<div class="hx-apidocs-wrap">
+  <div class="row">
+    <div class="col-md-3">
+      <div class="panel panel-default hx-card" style="position:sticky; top:70px;">
+        <div class="panel-heading hx-heading">spiderFX HX API</div>
+        <div class="panel-body" style="padding:0">
+          <ul class="list-group" style="margin-bottom:0">
+            <li class="list-group-item"><strong>Authentication</strong></li>
+            <li class="list-group-item"><a href="#auth">Session Auth</a></li>
+            <li class="list-group-item"><strong>Scans</strong></li>
+            <li class="list-group-item"><a href="#list-scans"><code>GET</code> /scanlist</a></li>
+            <li class="list-group-item"><a href="#create-scan"><code>POST</code> /startscan</a></li>
+            <li class="list-group-item"><a href="#stop-scan"><code>GET</code> /stopscan?id=</a></li>
+            <li class="list-group-item"><a href="#delete-scan"><code>GET</code> /scandelete?id=</a></li>
+            <li class="list-group-item"><a href="#scan-status"><code>GET</code> /scanstatus?id=</a></li>
+            <li class="list-group-item"><a href="#scan-summary"><code>GET</code> /scansummary?id=&amp;by=</a></li>
+            <li class="list-group-item"><strong>Data</strong></li>
+            <li class="list-group-item"><a href="#scan-events"><code>GET</code> /scaneventresults</a></li>
+            <li class="list-group-item"><a href="#scan-corr"><code>GET</code> /scancorrelations</a></li>
+            <li class="list-group-item"><a href="#scan-viz"><code>GET</code> /scanviz</a></li>
+            <li class="list-group-item"><a href="#scan-exports">Exports</a></li>
+            <li class="list-group-item"><strong>HX Views</strong></li>
+            <li class="list-group-item"><a href="#scan-hx"><code>GET</code> /scanhx</a></li>
+            <li class="list-group-item"><a href="#scan-hx-element"><code>GET</code> /scanhxelement</a></li>
+            <li class="list-group-item"><a href="#scan-hx-pdf"><code>GET</code> /scanhxreportpdf</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-6">
+      <div class="panel panel-default hx-card" id="auth">
+        <div class="panel-heading hx-heading">Authentication</div>
+        <div class="panel-body">
+          <p>This instance uses session authentication from the web app. Authenticate first using <code>/signinsubmit</code>, then call API endpoints with the same cookie session.</p>
+        </div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="list-scans">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scanlist</div>
+        <div class="panel-body">
+          <p>List scans run from UI/API.</p>
+          <pre>curl --request GET \
+  --url ${docroot}/scanlist</pre>
+        </div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="create-scan">
+        <div class="panel-heading hx-heading"><span class="label label-primary">POST</span> /startscan</div>
+        <div class="panel-body">
+          <p>Create and start a scan.</p>
+          <pre>curl --request POST \
+  --url ${docroot}/startscan \
+  --data-urlencode "scanname=MyScan" \
+  --data-urlencode "scantarget=example.com" \
+  --data-urlencode "typelist=domain" \
+  --data-urlencode "modulelist=module_sfp_dnsresolve" \
+  --data-urlencode "usecase=all"</pre>
+        </div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="stop-scan">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /stopscan?id=&lt;scan_id&gt;</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="delete-scan">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scandelete?id=&lt;scan_id&gt;</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-status">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scanstatus?id=&lt;scan_id&gt;</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-summary">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scansummary?id=&lt;scan_id&gt;&amp;by=type</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-events">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scaneventresults?id=&lt;scan_id&gt;&amp;eventType=ALL</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-corr">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scancorrelations?id=&lt;scan_id&gt;</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-viz">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scanviz?id=&lt;scan_id&gt;&amp;gexf=0</div>
+        <div class="panel-body">
+          <p>Set <code>gexf=1</code> for Gephi-compatible graph export.</p>
+        </div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-exports">
+        <div class="panel-heading hx-heading">Exports</div>
+        <div class="panel-body">
+          <ul>
+            <li><code>/scanexportlogs?id=&lt;scan_id&gt;</code></li>
+            <li><code>/scansearchresultexport?id=&lt;scan_id&gt;&amp;filetype=csv</code></li>
+            <li><code>/scaneventresultexport?id=&lt;scan_id&gt;&amp;type=ALL&amp;filetype=excel</code></li>
+            <li><code>/scancorrelationsexport?id=&lt;scan_id&gt;&amp;filetype=csv</code></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-hx">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scanhx?id=&lt;scan_id&gt;</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-hx-element">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scanhxelement?id=&lt;scan_id&gt;&amp;value=&lt;element&gt;</div>
+      </div>
+
+      <div class="panel panel-default hx-card" id="scan-hx-pdf">
+        <div class="panel-heading hx-heading"><span class="label label-success">GET</span> /scanhxreportpdf?id=&lt;scan_id&gt;</div>
+      </div>
+    </div>
+
+    <div class="col-md-3">
+      <div class="panel panel-default hx-card hx-dark-code-panel" style="position:sticky; top:70px;">
+        <div class="panel-heading">Quick Samples</div>
+        <div class="panel-body">
+          <p><strong>Python + requests</strong></p>
+          <pre>import requests
+s = requests.Session()
+s.post("${docroot}/signinsubmit", data={
+  "username": "admin",
+  "password": "YOUR_PASSWORD",
+  "next_url": "/console"
+})
+r = s.get("${docroot}/scanlist")
+print(r.json())</pre>
+          <hr>
+          <p><strong>Stop a scan</strong></p>
+          <pre>curl --request GET \
+  --url ${docroot}/stopscan?id=SCAN_ID</pre>
+          <hr>
+          <p><strong>HX report PDF</strong></p>
+          <pre>curl --request GET \
+  --url ${docroot}/scanhxreportpdf?id=SCAN_ID \
+  --output spiderfx-hx-report.pdf</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%include file="FOOTER.tmpl"/>

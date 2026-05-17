@@ -477,6 +477,15 @@ class SpiderFootHelpers():
 
             graph.add_edge(src, dst)
 
+        # networkx<3.4 references np.float_ which is removed in NumPy 2.x.
+        # Provide a runtime compatibility alias for GEXF export.
+        try:
+            import numpy as np  # noqa: PLC0415
+            if not hasattr(np, "float_") and hasattr(np, "float64"):
+                np.float_ = np.float64
+        except Exception:
+            pass
+
         gexf = GEXFWriter(graph=graph)
         return str(gexf).encode('utf-8')
 

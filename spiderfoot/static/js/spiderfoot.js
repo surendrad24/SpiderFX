@@ -12,39 +12,26 @@
 // Toggler for theme
 document.addEventListener("DOMContentLoaded", () => {
   const themeToggler = document.getElementById("theme-toggler");
-  const head = document.getElementsByTagName("HEAD")[0];
   const togglerText = document.getElementById("toggler-text");
-  let link = document.createElement("link");
 
-  if (localStorage.getItem("mode") === "Light Mode") {
-    togglerText.innerText = "Dark Mode";
-    document.getElementById("theme-toggler").checked = true; // ensure theme toggle is set to dark
-  } else { // initial mode ist null
-    togglerText.innerText = "Light Mode";
-    document.getElementById("theme-toggler").checked = false; // ensure theme toggle is set to light
+  if (!themeToggler || !togglerText) {
+    return;
   }
 
+  const isDark = localStorage.getItem("theme") === "dark-theme";
+  themeToggler.checked = isDark;
+  togglerText.innerText = isDark ? "Dark Mode" : "Light Mode";
 
-  themeToggler.addEventListener("click", () => {
-    togglerText.innerText = "Light Mode";
-
+  themeToggler.addEventListener("change", () => {
     if (localStorage.getItem("theme") === "dark-theme") {
       localStorage.removeItem("theme");
-      localStorage.setItem("mode", "Dark Mode");
-      link.rel = "stylesheet";
-      link.type = "text/css";
-      link.href = "${docroot}/static/css/spiderfoot.css";
-
-      head.appendChild(link);
+      localStorage.setItem("mode", "Light Mode");
+      togglerText.innerText = "Light Mode";
       location.reload();
     } else {
       localStorage.setItem("theme", "dark-theme");
-      localStorage.setItem("mode", "Light Mode");
-      link.rel = "stylesheet";
-      link.type = "text/css";
-      link.href = "${docroot}/static/css/dark.css";
-
-      head.appendChild(link);
+      localStorage.setItem("mode", "Dark Mode");
+      togglerText.innerText = "Dark Mode";
       location.reload();
     }
   });

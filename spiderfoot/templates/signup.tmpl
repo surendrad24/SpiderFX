@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign Up | spiderFX</title>
+  <link rel="icon" type="image/png" href="${docroot}/static/img/spiderfoot-icon.png">
+  <link href="${docroot}/static/css/spiderfx.css" rel="stylesheet">
+</head>
+<body class="fx-auth-page">
+  <div class="fx-auth-shell">
+    <a class="fx-brand" href="${docroot}/fx">
+      <img src="${docroot}/static/img/spiderfoot-icon.png" alt="spiderFX icon">
+      <span>spider<span>FX</span></span>
+    </a>
+    <section class="fx-auth-card">
+      <h1>Create your spiderFX account</h1>
+      <p>Tell us about your team and use case to get started faster.</p>
+      % if error:
+      <div class="fx-alert fx-alert-error">${error}</div>
+      % endif
+      % if success:
+      <div class="fx-alert fx-alert-success">Thanks, your sign-up request was saved. You can now <a href="${docroot}/signin">sign in</a>.</div>
+      % endif
+      <form method="post" action="${docroot}/signupsubmit">
+        <label>Username</label>
+        <input type="text" name="username" required placeholder="jane.doe">
+        <label>Password</label>
+        <input type="password" name="password" required placeholder="Minimum 10 characters">
+        <label>Confirm Password</label>
+        <input type="password" name="confirm_password" required placeholder="Re-enter password">
+        <label>Full Name</label>
+        <input type="text" name="full_name" required placeholder="Jane Doe">
+        <label>Email</label>
+        <input type="email" name="email" required placeholder="jane@company.com">
+        <label>Company</label>
+        <input type="text" name="company" placeholder="Acme Security">
+        <label>Role</label>
+        <input type="text" name="role" placeholder="Threat Intelligence Analyst">
+        <label>Use Case</label>
+        <textarea name="use_case" rows="3" placeholder="Attack surface monitoring, brand protection, and breach enrichment"></textarea>
+        <button type="submit" class="fx-btn fx-btn-full">Create Account</button>
+      </form>
+      <div class="fx-auth-switch">Already have access? <a href="${docroot}/signin">Sign in</a></div>
+    </section>
+  </div>
+</body>
+</html>

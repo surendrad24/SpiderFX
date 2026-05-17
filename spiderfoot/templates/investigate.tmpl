@@ -1,0 +1,48 @@
+<%include file="HEADER.tmpl"/>
+
+<h2 class="hx-page-title">Investigate</h2>
+<div class="panel panel-default hx-card">
+  <div class="panel-heading hx-heading"><i class="glyphicon glyphicon-alert"></i>&nbsp;Correlations Across Recent Scans</div>
+  <div class="panel-body">
+    % if len(rows) == 0:
+      <div class="alert alert-warning">No correlation data yet. Run scans first.</div>
+    % else:
+      <table class="table table-bordered table-striped tablesorter" id="investigate-table">
+        <thead>
+          <tr>
+            <th>Risk</th>
+            <th>Correlation</th>
+            <th>Data Elements</th>
+            <th>Scan</th>
+          </tr>
+        </thead>
+        <tbody>
+          % for row in rows:
+            <tr>
+              <td>
+                % if row['risk'] == 'HIGH':
+                  <span class="badge alert-danger">HIGH</span>
+                % elif row['risk'] == 'MEDIUM':
+                  <span class="badge alert-warning">MEDIUM</span>
+                % else:
+                  <span class="badge alert-info">LOW</span>
+                % endif
+              </td>
+              <td>${row['title']}</td>
+              <td>${row['count']}</td>
+              <td><a href="${docroot}/scaninfo?id=${row['scan_id']}">${row['scan_name']}</a></td>
+            </tr>
+          % endfor
+        </tbody>
+      </table>
+    % endif
+  </div>
+</div>
+
+<script>
+  if (document.getElementById('investigate-table')) {
+    $('#investigate-table').tablesorter();
+  }
+</script>
+
+<%include file="FOOTER.tmpl"/>

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In | spiderFX</title>
+  <link rel="icon" type="image/png" href="${docroot}/static/img/spiderfoot-icon.png">
+  <link href="${docroot}/static/node_modules/bootstrap/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="${docroot}/static/css/spiderfx.css" rel="stylesheet">
+</head>
+<body class="rf-page rf-signin-page">
+  <header class="rf-header">
+    <div class="container rf-header-inner">
+      <a href="${docroot}/" class="rf-logo">
+        <img src="${docroot}/static/img/spiderfoot-icon.png" alt="spiderFX logo">
+        <span>spider<span>FX</span></span>
+      </a>
+      <nav class="rf-nav">
+        <a href="${docroot}/">Home</a>
+        <a href="${docroot}/signup">Sign Up</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="rf-signin-main">
+    <div class="container">
+      <div class="row rf-signin-wrap">
+        <div class="col-md-6">
+          <h1 class="rf-title">Welcome back to <span>spiderFX</span></h1>
+          <p class="rf-description">Sign in to access your scan workspace, visual intelligence dashboards, and expanded OSINT modules.</p>
+          <img class="rf-signin-image" src="${docroot}/static/img/spiderfoot-header-dark.png" alt="spiderFX interface">
+        </div>
+        <div class="col-md-6">
+          <section class="rf-login-card">
+            <h3>Secure Sign In</h3>
+            % if error:
+            <div class="fx-alert fx-alert-error">${error}</div>
+            % endif
+            % if success:
+            <div class="fx-alert fx-alert-success">${success}</div>
+            % endif
+            <form method="post" action="${docroot}/signinsubmit">
+              <input type="hidden" name="next_url" value="${next_url or '/console'}">
+              <label>Username</label>
+              <input type="text" name="username" required placeholder="admin" value="${pending_user or ''}" ${"readonly" if pending_user else ""}>
+              % if not show_otp:
+              <label>Password</label>
+              <input type="password" name="password" required placeholder="••••••••">
+              % endif
+              % if show_otp:
+              <label>2FA Code</label>
+              <input type="text" name="otp" required placeholder="123456" pattern="[0-9]{6}" maxlength="6">
+              % endif
+              <button type="submit" class="rf-btn rf-btn-primary rf-btn-block">Continue</button>
+            </form>
+            <p class="rf-login-note">
+            % if show_otp:
+              Enter your 6-digit authenticator code to continue.
+            % else:
+              Session-based sign-in is enabled for this spiderFX instance.
+            % endif
+            </p>
+            <div class="rf-login-switch">Need an account? <a href="${docroot}/signup">Create one</a></div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

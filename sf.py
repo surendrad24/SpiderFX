@@ -20,11 +20,11 @@ import random
 import signal
 import sys
 import time
+from urllib.parse import quote
 from copy import deepcopy
 
 import cherrypy
 import cherrypy_cors
-from cherrypy.lib import auth_digest
 
 from sflib import SpiderFoot
 from sfscan import startSpiderFootScanner
@@ -483,6 +483,13 @@ def start_web_server(sfWebUiConfig: dict, sfConfig: dict, loggingQueue=None) -> 
 
     # Enable access to static files via the web directory
     conf = {
+        '/': {
+            'tools.sessions.on': True,
+            'tools.sessions.timeout': 120,
+            'tools.session_auth.on': True,
+            # Respect X-Forwarded-* headers when running behind nginx reverse proxy.
+            'tools.proxy.on': True,
+        },
         '/query': {
             'tools.encode.text_only': False,
             'tools.encode.add_charset': True,
@@ -522,20 +529,56 @@ def start_web_server(sfWebUiConfig: dict, sfConfig: dict, loggingQueue=None) -> 
             secrets[u] = p
 
     if secrets:
-        log.info("Enabling authentication based on supplied passwd file.")
-        conf['/'] = {
-            'tools.auth_digest.on': True,
-            'tools.auth_digest.realm': web_host,
-            'tools.auth_digest.get_ha1': auth_digest.get_ha1_dict_plain(secrets),
-            'tools.auth_digest.key': random.SystemRandom().randint(0, 99999999)
-        }
+        log.info("Enabling session authentication based on supplied passwd file.")
+        sfWebUiConfig['auth_users'] = secrets
     else:
         warn_msg = "\n********************************************************************\n"
-        warn_msg += "Warning: passwd file contains no passwords. Authentication disabled.\n"
+        warn_msg += "Warning: passwd file contains no passwords. Session authentication disabled.\n"
         warn_msg += "Please consider adding authentication to protect this instance!\n"
         warn_msg += "Refer to https://www.spiderfoot.net/documentation/#security.\n"
         warn_msg += "********************************************************************\n"
         log.warning(warn_msg)
+        sfWebUiConfig['auth_users'] = {}
+
+    public_paths = [
+        '/',
+        '/fx',
+        '/signin',
+        '/signup',
+        '/signinsubmit',
+        '/signupsubmit',
+        '/signout',
+        '/fxhealth',
+        '/static',
+        '/favicon.ico',
+    ]
+
+    def _session_auth_tool():
+        users = sfWebUiConfig.get('auth_users', {})
+        if not users:
+            return
+
+        path = cherrypy.request.path_info or '/'
+        for prefix in public_paths:
+            if path == prefix or path.startswith(prefix + '/'):
+                return
+
+        if cherrypy.session.get('authenticated'):
+            return
+
+        wants_json = 'application/json' in (cherrypy.request.headers.get('Accept', '') or '')
+        if wants_json or path.startswith('/query') or path.startswith('/scanhx') or path.startswith('/scanopts'):
+            raise cherrypy.HTTPError(401, "Authentication required")
+
+        signin_url = f"{web_root.rstrip('/')}/signin"
+        if not signin_url:
+            signin_url = '/signin'
+        next_url = path
+        if cherrypy.request.query_string:
+            next_url = f"{next_url}?{cherrypy.request.query_string}"
+        raise cherrypy.HTTPRedirect(f"{signin_url}?next_url={quote(next_url, safe='')}")
+
+    cherrypy.tools.session_auth = cherrypy.Tool('before_handler', _session_auth_tool)
 
     using_ssl = False
     key_path = SpiderFootHelpers.dataPath() + '/spiderfoot.key'
@@ -577,6 +620,7 @@ def start_web_server(sfWebUiConfig: dict, sfConfig: dict, loggingQueue=None) -> 
     print("*************************************************************")
     print(" Use SpiderFoot by starting your web browser of choice and ")
     print(f" browse to {url}")
+    print(f" Public spiderFX homepage: {url.rstrip('/')}/fx")
     print("*************************************************************")
     print("")
 

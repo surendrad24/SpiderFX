@@ -30,7 +30,7 @@ function filter(type) {
 }
 
 function getSelected() {
-    ids = [];
+    var ids = [];
     $("input[id*=cb_]").each(function(i, obj) {
         if (obj.checked) {
             ids[ids.length] = obj.id.replace("cb_", "");
@@ -51,7 +51,7 @@ function stopScan(id) {
 }
 
 function stopSelected() {
-    ids = getSelected();
+    var ids = getSelected();
     if (!ids) {
         alertify.message("Could not stop scans. No scans selected.");
         return;
@@ -71,7 +71,7 @@ function deleteScan(id) {
 }
 
 function deleteSelected() {
-    ids = getSelected();
+    var ids = getSelected();
     if (!ids) {
         alertify.message("Could not delete scans. No scans selected.");
         return;
@@ -84,7 +84,7 @@ function deleteSelected() {
 }
 
 function rerunSelected() {
-    ids = getSelected();
+    var ids = getSelected();
     if (!ids) {
         alertify.message("Could not re-run scan. No scans selected.");
         return;
@@ -95,7 +95,7 @@ function rerunSelected() {
 }
 
 function exportSelected(type) {
-    ids = getSelected();
+    var ids = getSelected();
 
     if (!ids) {
         sf.log("Error: no scan(s) selected");
@@ -157,7 +157,7 @@ function showlisttable(types, filter, data) {
     }
     var buttons = "<div class='btn-toolbar'>";
     buttons += "<div class='btn-group'>";
-    buttons += "<button id='btn-filter' class='btn btn-default'><i class='glyphicon glyphicon-filter'></i>&nbsp;Filter: " + filter + "</button>";
+    buttons += "<button id='btn-filter' class='btn btn-default dropdown-toggle' data-toggle='dropdown'><i class='glyphicon glyphicon-filter'></i>&nbsp;Filter: " + filter + "</button>";
     buttons += "<button class='btn dropdown-toggle btn-default' data-toggle='dropdown'><span class='caret'></span></button>";
     buttons += "<ul class='dropdown-menu'>";
     buttons += "<li><a href='javascript:filter(\"all\")'>None</a></li>";
@@ -171,7 +171,7 @@ function showlisttable(types, filter, data) {
     buttons += "</div>";
 
     buttons += "<div class='btn-group pull-right'>";
-    buttons += "<button rel='tooltip' data-title='Refresh' id='btn-refresh' class='btn btn-default btn-success'><i class='glyphicon glyphicon-refresh glyphicon-white'></i></a>";
+    buttons += "<button rel='tooltip' data-title='Refresh' id='btn-refresh' class='btn btn-default btn-success'><i class='glyphicon glyphicon-refresh glyphicon-white'></i></button>";
     buttons += "<button rel='tooltip' data-toggle='dropdown' data-title='Export Selected' id='btn-export' class='btn btn-default btn-success dropdown-toggle download-button'><i class='glyphicon glyphicon-download-alt glyphicon-white'></i></button>";
     buttons += "<ul class='dropdown-menu'>";
     buttons += "<li><a href='javascript:exportSelected(\"csv\")'>CSV</a></li>";
@@ -190,9 +190,9 @@ function showlisttable(types, filter, data) {
     buttons += "</div>";
     var table = "<table id='scanlist' class='table table-bordered table-striped'>";
     table += "<thead><tr><th class='sorter-false text-center'><input id='checkall' type='checkbox'></th> <th>Name</th> <th>Target</th> <th>Started</th> <th >Finished</th> <th class='text-center'>Status</th> <th class='text-center'>Elements</th><th class='text-center'>Correlations</th><th class='sorter-false text-center'>Action</th> </tr></thead><tbody>";
-    filtered = 0;
+    var filtered = 0;
     for (var i = 0; i < data.length; i++) {
-        if (types != null && $.inArray(data[i][6], types)) {
+        if (types != null && $.inArray(data[i][6], types) === -1) {
             filtered++;
             continue;
         }
@@ -234,7 +234,7 @@ function showlisttable(types, filter, data) {
         table += "</td></tr>";
     }
 
-    table += '</tbody><tfoot><tr><th colspan="8" class="ts-pager form-inline">';
+    table += '</tbody><tfoot><tr><th colspan="9" class="ts-pager form-inline">';
     table += '<div class="btn-group btn-group-sm" role="group">';
     table += '<button type="button" class="btn btn-default first"><span class="glyphicon glyphicon-step-backward"></span></button>';
     table += '<button type="button" class="btn btn-default prev"><span class="glyphicon glyphicon-backward"></span></button>';
@@ -292,4 +292,3 @@ function showlisttable(types, filter, data) {
 }
 
 showlist();
-
